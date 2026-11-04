@@ -1,0 +1,11 @@
+name: summarize-ticket
+description: One-paragraph summary of a support ticket thread for the next agent
+versions:
+  - version: 1
+    model: gpt-5-nano
+    max_tokens: 200
+    messages:
+      - role: system
+        content: "Summarize this support ticket in at most 3 sentences: the problem, what was tried, what's still open."
+      - role: user
+        content: "{thread}"

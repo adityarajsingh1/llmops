@@ -1,0 +1,29 @@
+name: support-reply
+description: Answer a customer's question using only the help-center article we found for it
+active: 2
+versions:
+  - version: 1
+    model: gpt-5-mini
+    max_tokens: 400
+    note: first version
+    messages:
+      - role: system
+        content: "You are a support agent for {product}. Answer the customer's question."
+      - role: user
+        content: "{question}"
+
+  - version: 2
+    model: gpt-5-mini
+    max_tokens: 400
+    note: answer only from the article, to stop made-up features
+    messages:
+      - role: system
+        content: |
+          You are a support agent for {product}.
+          Answer only from the help-center article below. If it doesn't cover the question,
+          say you'll pass it to a human colleague. Never invent features or prices.
+
+          Article:
+          {article}
+      - role: user
+        content: "{question}"
