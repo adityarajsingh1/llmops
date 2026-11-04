@@ -26,7 +26,7 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.10", "types-PyYAML"]
+dev = ["pytest>=8", "ruff>=0.15", "mypy>=1.10", "types-PyYAML"]
 
 [project.scripts]
 llmops = "llmops.cli:main"
@@ -40,6 +40,8 @@ include = ["llmops*"]
 [tool.ruff]
 line-length = 110
 target-version = "py310"
+# newer ruff also formats code blocks inside markdown; the README's aligned comments are on purpose
+extend-exclude = ["*.md"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "SIM"]
