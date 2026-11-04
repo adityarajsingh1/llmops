@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     log_level: Literal["debug", "info", "warning", "error"] = "info"
     # shown on /health so you can tell gateways apart when running several
     instance_name: str = "llmops"
+    prompts_dir: str = "prompts"
 
 
 @lru_cache
