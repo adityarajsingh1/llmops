@@ -63,3 +63,13 @@ def test_prompts_check_and_errors(capsys, tmp_path):
         cli.main(["prompts", "--dir", str(tmp_path), "check"])
     assert exit_code.value.code == 1
     assert "bad.yaml" in capsys.readouterr().err
+
+
+def test_keys_new_prints_a_key_and_its_hash(capsys):
+    from llmops.auth import hash_key
+
+    cli.main(["keys", "new", "search"])
+    out = capsys.readouterr().out
+    key = out.split("key for search: ")[1].split()[0]
+    assert key.startswith("llmops-")
+    assert f"key_sha256: {hash_key(key)}" in out

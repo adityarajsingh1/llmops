@@ -20,6 +20,8 @@ class Settings(BaseSettings):
     # shown on /health so you can tell gateways apart when running several
     instance_name: str = "llmops"
     prompts_dir: str = "prompts"
+    # providers, models and team keys; see gateway.example.yaml
+    config: str = "gateway.yaml"
 
 
 @lru_cache

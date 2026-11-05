@@ -26,13 +26,43 @@ The plan for llmops:
 - the FastAPI app, settings and a health check
 - the provider layer: one interface with OpenAI, Anthropic and a fake provider (for tests and demos), plus a plugin registry
 - the prompt registry: versioned prompts in YAML with a CLI to list, show, diff and check them
+- an OpenAI-compatible `/v1/chat/completions` endpoint with an API key per team
 
-The gateway endpoint that ties these together is next.
+Retries and fallbacks are next.
 
 ```bash
 pip install -e ".[dev]"
 llmops serve            # http://127.0.0.1:8000/health, API docs at /docs
 ```
+
+### The gateway endpoint
+
+Any app that already talks to OpenAI can point at llmops instead. Copy `gateway.example.yaml` to `gateway.yaml`, then:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://127.0.0.1:8000/v1", api_key="llmops-demo-key-do-not-use-in-prod")
+reply = client.chat.completions.create(model="echo", messages=[{"role": "user", "content": "hi"}])
+```
+
+`gateway.yaml` says which providers exist, which model names clients may ask for and where each one goes, and which teams have keys. Model names are yours to choose, so moving `support-bot` from one model or provider to another is a config change, not a deploy of every app.
+
+Each team gets its own key and, optionally, a list of models it may use:
+
+```bash
+llmops keys new search      # prints the key (give it to the team) and the hash for gateway.yaml
+```
+
+Only the SHA-256 of a key is stored, so the config file can live in git without leaking working keys. Provider keys come from environment variables (`api_key_env`), and a missing one only breaks the models that use that provider.
+
+Instead of `messages`, a request can name a prompt from the registry and pass its variables. The model defaults to the one the prompt version was written for:
+
+```json
+{"prompt": {"name": "support-reply", "variables": {"product": "Acme", "article": "...", "question": "..."}}}
+```
+
+Errors use OpenAI's format, so SDKs raise their usual exceptions: 401 for a bad key, 403 for a model the team can't use, 404 for an unknown model, 400 for a bad request, and 503 (worth retrying) or 502 (not) when the provider fails. Streaming isn't supported yet.
 
 ### Providers
 

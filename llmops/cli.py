@@ -1,4 +1,4 @@
-"""Command line entry point: `llmops serve`, `llmops prompts ...`, `llmops version`."""
+"""Command line entry point: `llmops serve`, `llmops prompts ...`, `llmops keys new`, `llmops version`."""
 
 import argparse
 import difflib
@@ -7,6 +7,7 @@ import sys
 import yaml
 
 from llmops import __version__
+from llmops.auth import hash_key, new_key
 from llmops.prompts import PromptError, PromptRegistry, PromptVersion
 from llmops.settings import get_settings
 
@@ -33,6 +34,11 @@ def main(argv: list[str] | None = None) -> None:
     diff.add_argument("old", type=int)
     diff.add_argument("new", type=int)
 
+    keys = sub.add_parser("keys", help="manage team API keys")
+    ksub = keys.add_subparsers(dest="action", required=True)
+    new = ksub.add_parser("new", help="make a key for a team and print the gateway.yaml entry")
+    new.add_argument("team")
+
     sub.add_parser("version", help="print the version")
 
     args = parser.parse_args(argv)
@@ -41,6 +47,9 @@ def main(argv: list[str] | None = None) -> None:
         return
     if args.command == "prompts":
         sys.exit(prompts_command(args))
+    if args.command == "keys":
+        keys_new(args.team)
+        return
 
     import uvicorn  # only needed for serving, keeps `llmops version` fast
 
@@ -70,6 +79,13 @@ _BlockDumper.add_representer(str, _str_presenter)
 def _as_text(v: PromptVersion) -> str:
     data = v.model_dump(exclude_none=True, exclude={"version", "note"})
     return yaml.dump(data, Dumper=_BlockDumper, sort_keys=False, allow_unicode=True, width=100)
+
+
+def keys_new(team: str) -> None:
+    key = new_key()
+    print(f"key for {team}: {key}")
+    print("give it to the team now; only its hash is kept. add this under `teams:` in gateway.yaml:\n")
+    print(f"  - name: {team}\n    key_sha256: {hash_key(key)}")
 
 
 def prompts_command(args: argparse.Namespace) -> int:

@@ -1,0 +1,252 @@
+"""
+The OpenAI-compatible API: POST /v1/chat/completions and GET /v1/models.
+
+Apps that already use an OpenAI SDK only change base_url and api_key. Errors
+come back in OpenAI's shape too ({"error": {"message", "type", "code"}}), so
+the SDKs raise their usual exceptions.
+"""
+
+from __future__ import annotations
+
+import time
+import uuid
+from typing import Any, Literal
+
+from fastapi import APIRouter, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from llmops.auth import bearer_token, find_owner
+from llmops.config import ConfigError, GatewayConfig, Team
+from llmops.prompts import PromptError, PromptRegistry
+from llmops.providers import ChatMessage, CompletionRequest, Provider, ProviderError
+
+
+class GatewayError(Exception):
+    def __init__(self, status: int, message: str, code: str, type: str = "invalid_request_error"):
+        super().__init__(message)
+        self.status = status
+        self.message = message
+        self.code = code
+        self.type = type
+
+
+def error_response(status: int, message: str, code: str, type: str = "invalid_request_error") -> JSONResponse:
+    return JSONResponse(
+        status_code=status, content={"error": {"message": message, "type": type, "code": code}}
+    )
+
+
+async def gateway_error_handler(request: Request, exc: Exception) -> JSONResponse:
+    assert isinstance(exc, GatewayError)
+    return error_response(exc.status, exc.message, exc.code, exc.type)
+
+
+async def validation_error_handler(request: Request, exc: Exception) -> JSONResponse:
+    assert isinstance(exc, RequestValidationError)
+    first = exc.errors()[0] if exc.errors() else {}
+    where = ".".join(str(p) for p in first.get("loc", ()) if p != "body")
+    msg = str(first.get("msg", "invalid request")).removeprefix("Value error, ")
+    message = f"{where}: {msg}" if where else msg
+    return error_response(400, message, "invalid_request")
+
+
+# --- request and response bodies -------------------------------------------------------------
+
+
+class WireMessage(BaseModel):
+    # "developer" is what newer OpenAI SDKs send instead of "system"
+    role: Literal["system", "developer", "user", "assistant"]
+    content: str
+
+    def to_chat(self) -> ChatMessage:
+        return ChatMessage(role="system" if self.role == "developer" else self.role, content=self.content)
+
+
+class PromptRef(BaseModel):
+    """llmops extension: use a prompt from the registry instead of sending messages."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    version: int | None = None
+    variables: dict[str, Any] = Field(default_factory=dict)
+
+
+class ChatCompletionRequest(BaseModel):
+    # other OpenAI fields (top_p, seed, ...) are accepted and ignored for now
+    model_config = ConfigDict(extra="ignore")
+
+    model: str | None = None
+    messages: list[WireMessage] | None = None
+    prompt: PromptRef | None = None
+    max_tokens: int | None = Field(default=None, gt=0)
+    max_completion_tokens: int | None = Field(default=None, gt=0)
+    temperature: float | None = Field(default=None, ge=0, le=2)
+    stream: bool = False
+
+    @model_validator(mode="after")
+    def _messages_or_prompt(self) -> ChatCompletionRequest:
+        if (self.messages is None) == (self.prompt is None):
+            raise ValueError("send either messages or prompt, not both")
+        if self.messages is not None and not self.messages:
+            raise ValueError("messages can't be empty")
+        if self.prompt is None and not self.model:
+            raise ValueError("model is required")
+        return self
+
+
+class AssistantMessage(BaseModel):
+    role: Literal["assistant"] = "assistant"
+    content: str
+
+
+class Choice(BaseModel):
+    index: int = 0
+    message: AssistantMessage
+    finish_reason: str | None
+
+
+class WireUsage(BaseModel):
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+
+
+class ChatCompletion(BaseModel):
+    id: str
+    object: Literal["chat.completion"] = "chat.completion"
+    created: int
+    model: str
+    choices: list[Choice]
+    usage: WireUsage
+
+
+class ModelCard(BaseModel):
+    id: str
+    object: Literal["model"] = "model"
+    owned_by: str
+
+
+class ModelList(BaseModel):
+    object: Literal["list"] = "list"
+    data: list[ModelCard]
+
+
+# --- the gateway ------------------------------------------------------------------------------
+
+
+class Gateway:
+    """Config, prompts and live provider clients. Providers are built on first use, so a missing
+    key for one provider only breaks the models that use it."""
+
+    def __init__(
+        self,
+        config: GatewayConfig,
+        prompts: PromptRegistry | None = None,
+        providers: dict[str, Provider] | None = None,
+    ):
+        self.config = config
+        self.prompts = prompts or PromptRegistry([])
+        self._providers: dict[str, Provider] = dict(providers or {})
+
+    def authenticate(self, authorization: str | None) -> Team:
+        key = bearer_token(authorization)
+        if key is None:
+            raise GatewayError(401, "missing API key: send 'Authorization: Bearer <key>'", "invalid_api_key")
+        team = find_owner(key, self.config.teams)
+        if not isinstance(team, Team):
+            raise GatewayError(401, "invalid API key", "invalid_api_key")
+        return team
+
+    def provider(self, name: str) -> Provider:
+        if name not in self._providers:
+            try:
+                self._providers[name] = self.config.providers[name].build()
+            except (ConfigError, ProviderError, ValueError, TypeError) as e:
+                raise GatewayError(
+                    500, f"provider '{name}' is misconfigured: {e}", "provider_misconfigured", "api_error"
+                ) from None
+        return self._providers[name]
+
+    def build_request(self, body: ChatCompletionRequest, team: Team) -> tuple[str, CompletionRequest]:
+        """The model name the client asked for, and the request to send upstream."""
+        if body.prompt is not None:
+            try:
+                req = self.prompts.render(body.prompt.name, body.prompt.variables, body.prompt.version)
+            except PromptError as e:
+                raise GatewayError(400, str(e), "prompt_error") from None
+            alias = body.model or req.model
+        else:
+            assert body.messages is not None and body.model is not None
+            alias = body.model
+            req = CompletionRequest(model=alias, messages=[m.to_chat() for m in body.messages])
+
+        route = self.config.models.get(alias)
+        if route is None:
+            raise GatewayError(404, f"the model '{alias}' does not exist", "model_not_found")
+        if not team.may_use(alias):
+            raise GatewayError(
+                403, f"team '{team.name}' may not use '{alias}'", "model_not_allowed", "permission_error"
+            )
+
+        updates: dict[str, Any] = {"model": route.upstream or alias}
+        max_tokens = body.max_completion_tokens or body.max_tokens
+        if max_tokens is not None:
+            updates["max_tokens"] = max_tokens
+        if body.temperature is not None:
+            updates["temperature"] = body.temperature
+        return alias, req.model_copy(update=updates)
+
+    async def aclose(self) -> None:
+        for p in self._providers.values():
+            await p.aclose()
+
+
+router = APIRouter(prefix="/v1", tags=["openai-compatible"])
+
+
+def _gateway(request: Request) -> Gateway:
+    gateway: Gateway = request.app.state.gateway
+    return gateway
+
+
+@router.post("/chat/completions", response_model=ChatCompletion)
+async def chat_completions(body: ChatCompletionRequest, request: Request) -> ChatCompletion:
+    gateway = _gateway(request)
+    team = gateway.authenticate(request.headers.get("authorization"))
+    if body.stream:
+        raise GatewayError(400, "streaming isn't supported yet; send stream: false", "unsupported")
+    alias, upstream = gateway.build_request(body, team)
+    provider = gateway.provider(gateway.config.models[alias].provider)
+    try:
+        resp = await provider.complete(upstream)
+    except ProviderError as e:
+        if e.retryable:
+            raise GatewayError(503, str(e), "provider_unavailable", "api_error") from None
+        raise GatewayError(502, str(e), "provider_error", "api_error") from None
+    return ChatCompletion(
+        id=f"chatcmpl-{uuid.uuid4().hex}",
+        created=int(time.time()),
+        model=alias,
+        choices=[Choice(message=AssistantMessage(content=resp.text), finish_reason=resp.finish_reason)],
+        usage=WireUsage(
+            prompt_tokens=resp.usage.prompt_tokens,
+            completion_tokens=resp.usage.completion_tokens,
+            total_tokens=resp.usage.total_tokens,
+        ),
+    )
+
+
+@router.get("/models", response_model=ModelList)
+async def list_models(request: Request) -> ModelList:
+    gateway = _gateway(request)
+    team = gateway.authenticate(request.headers.get("authorization"))
+    return ModelList(
+        data=[
+            ModelCard(id=alias, owned_by=route.provider)
+            for alias, route in sorted(gateway.config.models.items())
+            if team.may_use(alias)
+        ]
+    )

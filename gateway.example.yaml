@@ -1,0 +1,31 @@
+# Copy to gateway.yaml (or point LLMOPS_CONFIG at it) and adjust.
+
+providers:
+  openai:
+    type: openai
+    api_key_env: OPENAI_API_KEY
+  anthropic:
+    type: anthropic
+    api_key_env: ANTHROPIC_API_KEY
+  local:
+    # any OpenAI-compatible server, e.g. ollama or vLLM
+    type: openai
+    options: {api_key: unused, base_url: "http://localhost:11434/v1"}
+  demo:
+    # no network and no key; echoes the last message back
+    type: fake
+
+# The model names clients send, and where each one goes.
+models:
+  gpt-5-mini: {provider: openai}
+  claude-haiku: {provider: anthropic, upstream: claude-haiku-4-5}
+  llama3: {provider: local, upstream: "llama3.1:8b"}
+  echo: {provider: demo}
+
+# One entry per team. Make a key with `llmops keys new <team>`: the key goes to
+# the team, only its hash goes here.
+teams:
+  - name: demo
+    # the key for this hash is: llmops-demo-key-do-not-use-in-prod
+    key_sha256: 3bd90f79c958a01cd4fee01778560adce98eac34e4c0f5e8185b5edda8bac6b4
+    models: [echo]
