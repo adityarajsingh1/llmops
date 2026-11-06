@@ -13,6 +13,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from llmops.providers import Provider, create
+from llmops.reliability import ReliabilityConfig
 
 
 class ConfigError(Exception):
@@ -44,6 +45,8 @@ class ModelRoute(BaseModel):
     provider: str
     # the provider's own name for the model; defaults to the name clients use
     upstream: str | None = None
+    # other models (by their names here) to try, in order, when this one's provider is down
+    fallbacks: list[str] = Field(default_factory=list)
 
 
 class Team(BaseModel):
@@ -64,12 +67,16 @@ class GatewayConfig(BaseModel):
     providers: dict[str, ProviderConfig] = Field(default_factory=dict)
     models: dict[str, ModelRoute] = Field(default_factory=dict)
     teams: list[Team] = Field(default_factory=list)
+    reliability: ReliabilityConfig = Field(default_factory=ReliabilityConfig)
 
     @model_validator(mode="after")
     def _check_references(self) -> GatewayConfig:
         for alias, route in self.models.items():
             if route.provider not in self.providers:
                 raise ValueError(f"model '{alias}' uses provider '{route.provider}', which isn't defined")
+            for fb in route.fallbacks:
+                if fb == alias or fb not in self.models:
+                    raise ValueError(f"model '{alias}' has an invalid fallback '{fb}'")
         names: set[str] = set()
         hashes: set[str] = set()
         for team in self.teams:

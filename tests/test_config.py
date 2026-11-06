@@ -67,3 +67,16 @@ def test_example_config_is_valid():
     from pathlib import Path
 
     GatewayConfig.load(Path(__file__).resolve().parent.parent / "gateway.example.yaml")
+
+
+@pytest.mark.parametrize("fallbacks", [["echo"], ["missing"]])
+def test_bad_fallbacks(fallbacks):
+    with pytest.raises(ValueError, match="invalid fallback"):
+        GatewayConfig.model_validate(config(models={"echo": {"provider": "demo", "fallbacks": fallbacks}}))
+
+
+def test_reliability_settings():
+    cfg = GatewayConfig.model_validate(config(reliability={"retry": {"attempts": 5, "timeout": 10}}))
+    assert cfg.reliability.retry.attempts == 5 and cfg.reliability.breaker.failure_threshold == 5
+    with pytest.raises(ValueError):
+        GatewayConfig.model_validate(config(reliability={"retry": {"attempts": 0}}))

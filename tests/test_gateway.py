@@ -14,6 +14,10 @@ PROMPTS = Path(__file__).resolve().parent.parent / "prompts"
 SEARCH, OPS = "llmops-search-key", "llmops-ops-key"
 
 
+async def no_sleep(seconds: float) -> None:
+    pass
+
+
 def make_client(settings, fake=None, **config_overrides):
     data = {
         "providers": {
@@ -32,7 +36,9 @@ def make_client(settings, fake=None, **config_overrides):
     }
     data.update(config_overrides)
     fake = fake or FakeProvider()
-    gateway = Gateway(GatewayConfig.model_validate(data), PromptRegistry.from_dir(PROMPTS), {"demo": fake})
+    gateway = Gateway(
+        GatewayConfig.model_validate(data), PromptRegistry.from_dir(PROMPTS), {"demo": fake}, sleep=no_sleep
+    )
     return TestClient(create_app(settings, gateway)), fake
 
 
@@ -123,9 +129,61 @@ def test_streaming_is_rejected_clearly(settings):
     "status, expected, code", [(429, 503, "provider_unavailable"), (400, 502, "provider_error")]
 )
 def test_provider_errors(settings, status, expected, code):
-    client, _ = make_client(settings, fake=FakeProvider(failing(status)))
+    # three tries by default, so three failures in a row reach the client
+    client, fake = make_client(settings, fake=FakeProvider(failing(status, times=3)))
     r = chat(client)
     assert r.status_code == expected and error_code(r) == code
+    assert len(fake.requests) == (3 if status == 429 else 1)
+
+
+def test_a_retry_hides_a_passing_blip(settings):
+    client, fake = make_client(settings, fake=FakeProvider([*failing(503), "fine"]))
+    r = chat(client)
+    assert r.status_code == 200 and r.json()["choices"][0]["message"]["content"] == "fine"
+    assert len(fake.requests) == 2
+
+
+def fallback_client(settings, primary, backup):
+    data = {
+        "providers": {"main": {"type": "fake"}, "backup": {"type": "fake"}},
+        "models": {
+            "smart": {"provider": "main", "upstream": "smart-v1", "fallbacks": ["cheap"]},
+            "cheap": {"provider": "backup", "upstream": "cheap-v2"},
+        },
+        "teams": [{"name": "search", "key_sha256": hash_key(SEARCH), "models": ["smart"]}],
+        "reliability": {"retry": {"attempts": 2}, "breaker": {"failure_threshold": 2}},
+    }
+    gateway = Gateway(
+        GatewayConfig.model_validate(data), providers={"main": primary, "backup": backup}, sleep=no_sleep
+    )
+    return TestClient(create_app(settings, gateway)), gateway
+
+
+def test_fallback_when_the_provider_is_down(settings):
+    primary, backup = FakeProvider(failing(503, times=10)), FakeProvider(["from backup"] * 3)
+    client, gateway = fallback_client(settings, primary, backup)
+    r = chat(client, model="smart")
+    # the fallback answers even though the team only lists "smart"; fallbacks are the operator's choice
+    assert r.status_code == 200 and r.json()["model"] == "cheap"
+    assert backup.requests[0].model == "cheap-v2"
+    assert len(primary.requests) == 2 and gateway.breakers["main"].state == "open"
+
+    # with the breaker open, the next request skips the primary without calling it
+    assert chat(client, model="smart").json()["model"] == "cheap"
+    assert len(primary.requests) == 2
+
+
+def test_no_fallback_for_a_bad_request(settings):
+    primary, backup = FakeProvider(failing(400)), FakeProvider()
+    client, _ = fallback_client(settings, primary, backup)
+    r = chat(client, model="smart")
+    assert r.status_code == 502 and backup.requests == []
+
+
+def test_everything_down(settings):
+    client, _ = fallback_client(settings, FakeProvider(failing(500, 5)), FakeProvider(failing(502, 5)))
+    r = chat(client, model="smart")
+    assert r.status_code == 503 and "fake returned 502" in r.json()["error"]["message"]
 
 
 def test_missing_provider_key_only_breaks_that_model(settings):

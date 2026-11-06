@@ -27,8 +27,7 @@ The plan for llmops:
 - the provider layer: one interface with OpenAI, Anthropic and a fake provider (for tests and demos), plus a plugin registry
 - the prompt registry: versioned prompts in YAML with a CLI to list, show, diff and check them
 - an OpenAI-compatible `/v1/chat/completions` endpoint with an API key per team
-
-Retries and fallbacks are next.
+- retries with backoff, timeouts, fallback models and a circuit breaker per provider
 
 ```bash
 pip install -e ".[dev]"
@@ -63,6 +62,14 @@ Instead of `messages`, a request can name a prompt from the registry and pass it
 ```
 
 Errors use OpenAI's format, so SDKs raise their usual exceptions: 401 for a bad key, 403 for a model the team can't use, 404 for an unknown model, 400 for a bad request, and 503 (worth retrying) or 502 (not) when the provider fails. Streaming isn't supported yet.
+
+### When a provider fails
+
+Every call to a provider gets a timeout and is retried with exponential backoff (with jitter, so a fleet of gateways doesn't retry in lockstep) when the error is worth retrying: 429s, 5xx, timeouts and network errors. A bad request or a bad key isn't retried.
+
+If a model still fails, the gateway tries its `fallbacks` in order, so a request for `gpt-5-mini` can be answered by `claude-haiku` during an OpenAI outage. The response's `model` field says which model actually answered. A request the provider rejected as invalid (400, 413, 422) isn't sent to the fallbacks, since they would reject it too.
+
+Each provider has a circuit breaker. After 5 failures in a row it opens and the gateway stops calling that provider for 30 seconds, so requests go straight to the fallback instead of waiting on timeouts. Then one trial request is let through, and a success closes the breaker again. All of these numbers are under `reliability:` in `gateway.yaml`.
 
 ### Providers
 

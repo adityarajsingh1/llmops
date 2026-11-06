@@ -8,6 +8,8 @@ the SDKs raise their usual exceptions.
 
 from __future__ import annotations
 
+import asyncio
+import functools
 import time
 import uuid
 from typing import Any, Literal
@@ -20,7 +22,8 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from llmops.auth import bearer_token, find_owner
 from llmops.config import ConfigError, GatewayConfig, Team
 from llmops.prompts import PromptError, PromptRegistry
-from llmops.providers import ChatMessage, CompletionRequest, Provider, ProviderError
+from llmops.providers import ChatMessage, CompletionRequest, CompletionResponse, Provider, ProviderError
+from llmops.reliability import CircuitBreaker, Sleep, call_with_retries
 
 
 class GatewayError(Exception):
@@ -146,10 +149,14 @@ class Gateway:
         config: GatewayConfig,
         prompts: PromptRegistry | None = None,
         providers: dict[str, Provider] | None = None,
+        sleep: Sleep = asyncio.sleep,
     ):
         self.config = config
         self.prompts = prompts or PromptRegistry([])
         self._providers: dict[str, Provider] = dict(providers or {})
+        # one breaker per provider: an outage hits every model on it
+        self.breakers = {name: CircuitBreaker(config.reliability.breaker) for name in config.providers}
+        self._sleep = sleep
 
     def authenticate(self, authorization: str | None) -> Team:
         key = bearer_token(authorization)
@@ -199,6 +206,37 @@ class Gateway:
             updates["temperature"] = body.temperature
         return alias, req.model_copy(update=updates)
 
+    async def complete(self, alias: str, request: CompletionRequest) -> tuple[str, CompletionResponse]:
+        """Send the request to `alias`, then to its fallbacks while the failure is the provider's.
+        Returns the model that answered and its response."""
+        last: Exception | None = None
+        for candidate in [alias, *self.config.models[alias].fallbacks]:
+            route = self.config.models[candidate]
+            req = request.model_copy(update={"model": route.upstream or candidate})
+            try:
+                provider = self.provider(route.provider)
+                resp = await call_with_retries(
+                    functools.partial(provider.complete, req),
+                    provider=route.provider,
+                    policy=self.config.reliability.retry,
+                    breaker=self.breakers[route.provider],
+                    sleep=self._sleep,
+                )
+                return candidate, resp
+            except ProviderError as e:
+                # the request itself is bad: another model would reject it too
+                if e.status in (400, 413, 422):
+                    raise GatewayError(502, str(e), "provider_error", "api_error") from None
+                last = e
+            except GatewayError as e:
+                last = e
+        if isinstance(last, GatewayError):
+            raise last
+        assert isinstance(last, ProviderError)
+        if last.retryable:
+            raise GatewayError(503, str(last), "provider_unavailable", "api_error")
+        raise GatewayError(502, str(last), "provider_error", "api_error")
+
     async def aclose(self) -> None:
         for p in self._providers.values():
             await p.aclose()
@@ -219,13 +257,8 @@ async def chat_completions(body: ChatCompletionRequest, request: Request) -> Cha
     if body.stream:
         raise GatewayError(400, "streaming isn't supported yet; send stream: false", "unsupported")
     alias, upstream = gateway.build_request(body, team)
-    provider = gateway.provider(gateway.config.models[alias].provider)
-    try:
-        resp = await provider.complete(upstream)
-    except ProviderError as e:
-        if e.retryable:
-            raise GatewayError(503, str(e), "provider_unavailable", "api_error") from None
-        raise GatewayError(502, str(e), "provider_error", "api_error") from None
+    # `model` in the response is the one that answered, which differs from the request after a fallback
+    alias, resp = await gateway.complete(alias, upstream)
     return ChatCompletion(
         id=f"chatcmpl-{uuid.uuid4().hex}",
         created=int(time.time()),

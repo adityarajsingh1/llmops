@@ -17,7 +17,8 @@ providers:
 
 # The model names clients send, and where each one goes.
 models:
-  gpt-5-mini: {provider: openai}
+  # if OpenAI is down (after retries), the same request goes to claude-haiku
+  gpt-5-mini: {provider: openai, fallbacks: [claude-haiku]}
   claude-haiku: {provider: anthropic, upstream: claude-haiku-4-5}
   llama3: {provider: local, upstream: "llama3.1:8b"}
   echo: {provider: demo}
@@ -29,3 +30,14 @@ teams:
     # the key for this hash is: llmops-demo-key-do-not-use-in-prod
     key_sha256: 3bd90f79c958a01cd4fee01778560adce98eac34e4c0f5e8185b5edda8bac6b4
     models: [echo]
+
+# Optional; these are the defaults.
+reliability:
+  retry:
+    attempts: 3        # tries per model, the first one included
+    base_delay: 0.25   # seconds; doubles each retry, with jitter
+    max_delay: 4.0
+    timeout: 30.0      # seconds per try
+  breaker:
+    failure_threshold: 5   # failures in a row before a provider is skipped
+    reset_seconds: 30      # then one trial request is let through
