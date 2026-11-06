@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import logging
 import time
 import uuid
 from typing import Any, Literal
@@ -17,6 +18,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from opentelemetry import trace
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from llmops.auth import bearer_token, find_owner
@@ -24,6 +26,9 @@ from llmops.config import ConfigError, GatewayConfig, Team
 from llmops.prompts import PromptError, PromptRegistry
 from llmops.providers import ChatMessage, CompletionRequest, CompletionResponse, Provider, ProviderError
 from llmops.reliability import CircuitBreaker, Sleep, call_with_retries
+
+log = logging.getLogger("llmops.gateway")
+tracer = trace.get_tracer("llmops")
 
 
 class GatewayError(Exception):
@@ -213,23 +218,37 @@ class Gateway:
         for candidate in [alias, *self.config.models[alias].fallbacks]:
             route = self.config.models[candidate]
             req = request.model_copy(update={"model": route.upstream or candidate})
-            try:
-                provider = self.provider(route.provider)
-                resp = await call_with_retries(
-                    functools.partial(provider.complete, req),
-                    provider=route.provider,
-                    policy=self.config.reliability.retry,
-                    breaker=self.breakers[route.provider],
-                    sleep=self._sleep,
+            if candidate != alias:
+                log.warning(
+                    "falling back", extra={"model": alias, "fallback": candidate, "reason": str(last)}
                 )
+            # span names and attributes follow the OpenTelemetry GenAI conventions
+            with tracer.start_as_current_span(f"chat {req.model}", kind=trace.SpanKind.CLIENT) as span:
+                span.set_attribute("gen_ai.operation.name", "chat")
+                span.set_attribute("gen_ai.system", route.provider)
+                span.set_attribute("gen_ai.request.model", req.model)
+                span.set_attribute("llmops.model", candidate)
+                span.set_attribute("llmops.fallback", candidate != alias)
+                try:
+                    provider = self.provider(route.provider)
+                    resp = await call_with_retries(
+                        functools.partial(provider.complete, req),
+                        provider=route.provider,
+                        policy=self.config.reliability.retry,
+                        breaker=self.breakers[route.provider],
+                        sleep=self._sleep,
+                    )
+                except (ProviderError, GatewayError) as e:
+                    span.set_status(trace.StatusCode.ERROR, str(e))
+                    # the request itself is bad: another model would reject it too
+                    if isinstance(e, ProviderError) and e.status in (400, 413, 422):
+                        raise GatewayError(502, str(e), "provider_error", "api_error") from None
+                    last = e
+                    continue
+                span.set_attribute("gen_ai.response.model", resp.model)
+                span.set_attribute("gen_ai.usage.input_tokens", resp.usage.prompt_tokens)
+                span.set_attribute("gen_ai.usage.output_tokens", resp.usage.completion_tokens)
                 return candidate, resp
-            except ProviderError as e:
-                # the request itself is bad: another model would reject it too
-                if e.status in (400, 413, 422):
-                    raise GatewayError(502, str(e), "provider_error", "api_error") from None
-                last = e
-            except GatewayError as e:
-                last = e
         if isinstance(last, GatewayError):
             raise last
         assert isinstance(last, ProviderError)
@@ -254,9 +273,11 @@ def _gateway(request: Request) -> Gateway:
 async def chat_completions(body: ChatCompletionRequest, request: Request) -> ChatCompletion:
     gateway = _gateway(request)
     team = gateway.authenticate(request.headers.get("authorization"))
+    request.state.team = team.name
     if body.stream:
         raise GatewayError(400, "streaming isn't supported yet; send stream: false", "unsupported")
     alias, upstream = gateway.build_request(body, team)
+    request.state.model = alias
     # `model` in the response is the one that answered, which differs from the request after a fallback
     alias, resp = await gateway.complete(alias, upstream)
     return ChatCompletion(

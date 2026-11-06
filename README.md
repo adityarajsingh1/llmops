@@ -28,6 +28,7 @@ The plan for llmops:
 - the prompt registry: versioned prompts in YAML with a CLI to list, show, diff and check them
 - an OpenAI-compatible `/v1/chat/completions` endpoint with an API key per team
 - retries with backoff, timeouts, fallback models and a circuit breaker per provider
+- JSON logs and OpenTelemetry traces, tied together by a request id
 
 ```bash
 pip install -e ".[dev]"
@@ -70,6 +71,25 @@ Every call to a provider gets a timeout and is retried with exponential backoff 
 If a model still fails, the gateway tries its `fallbacks` in order, so a request for `gpt-5-mini` can be answered by `claude-haiku` during an OpenAI outage. The response's `model` field says which model actually answered. A request the provider rejected as invalid (400, 413, 422) isn't sent to the fallbacks, since they would reject it too.
 
 Each provider has a circuit breaker. After 5 failures in a row it opens and the gateway stops calling that provider for 30 seconds, so requests go straight to the fallback instead of waiting on timeouts. Then one trial request is let through, and a success closes the breaker again. All of these numbers are under `reliability:` in `gateway.yaml`.
+
+### Logs and traces
+
+Every request gets an id. If the caller sends an `X-Request-ID` header, the gateway keeps it, otherwise it makes one, and either way it's returned in the response headers. That id is in every log line written while the request runs and on its trace, so when an app reports "this call was slow" you can find exactly what happened.
+
+Logs are one JSON object per line on stderr, ready for Loki, Elasticsearch or CloudWatch (`LLMOPS_LOG_FORMAT=text` for reading them in a terminal). Each request writes one line with its team, model, status and duration:
+
+```json
+{"ts": "2026-11-06T07:51:13.347+00:00", "level": "info", "logger": "llmops", "message": "request", "request_id": "demo-1", "method": "POST", "path": "/v1/chat/completions", "status": 200, "duration_ms": 4.8, "team": "demo", "model": "echo"}
+```
+
+Traces use OpenTelemetry. Each request is a span, and each call to a provider is a child span with the model and token counts, following the OpenTelemetry GenAI conventions, so a fallback shows up as a failed span followed by one for the backup model. To send them to Jaeger, Tempo or any OTLP collector:
+
+```bash
+pip install -e ".[otel]"
+LLMOPS_OTEL_ENDPOINT=http://localhost:4318/v1/traces llmops serve
+```
+
+Without that setting the spans are still created, but they cost next to nothing and go nowhere. API keys and prompt text are never logged.
 
 ### Providers
 

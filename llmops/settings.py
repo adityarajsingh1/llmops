@@ -17,6 +17,10 @@ class Settings(BaseSettings):
     host: str = "127.0.0.1"
     port: int = Field(default=8000, ge=1, le=65535)
     log_level: Literal["debug", "info", "warning", "error"] = "info"
+    # json for log collectors, text for reading in a terminal
+    log_format: Literal["json", "text"] = "json"
+    # OTLP/HTTP endpoint for traces, e.g. http://localhost:4318/v1/traces; unset means no export
+    otel_endpoint: str | None = None
     # shown on /health so you can tell gateways apart when running several
     instance_name: str = "llmops"
     prompts_dir: str = "prompts"

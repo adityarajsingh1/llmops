@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from llmops import __version__
 from llmops.config import GatewayConfig
 from llmops.gateway import Gateway, GatewayError, gateway_error_handler, router, validation_error_handler
+from llmops.observability import configure_logging, configure_tracing, observe_request
 from llmops.prompts import PromptRegistry
 from llmops.settings import Settings, get_settings
 
@@ -51,6 +52,7 @@ def create_app(settings: Settings | None = None, gateway: Gateway | None = None)
     app.state.gateway = gw
     app.add_exception_handler(GatewayError, gateway_error_handler)
     app.add_exception_handler(RequestValidationError, validation_error_handler)
+    app.middleware("http")(observe_request)
     app.include_router(router)
     started = time.monotonic()
 
@@ -66,3 +68,12 @@ def create_app(settings: Settings | None = None, gateway: Gateway | None = None)
         )
 
     return app
+
+
+def serve_app() -> FastAPI:
+    """What `llmops serve` runs: create_app() plus process-wide logging and tracing setup, which
+    tests and embedding apps shouldn't get by just importing the app."""
+    settings = get_settings()
+    configure_logging(settings)
+    configure_tracing(settings)
+    return create_app(settings)

@@ -55,12 +55,15 @@ def main(argv: list[str] | None = None) -> None:
 
     settings = get_settings()
     uvicorn.run(
-        "llmops.app:create_app",
+        "llmops.app:serve_app",
         factory=True,
         host=args.host or settings.host,
         port=args.port or settings.port,
         log_level=settings.log_level,
         reload=args.reload,
+        # the gateway writes its own access log with request ids; see observability.py
+        log_config=None,
+        access_log=False,
     )
 
 

@@ -14,7 +14,7 @@ def test_serve_passes_settings_to_uvicorn(monkeypatch):
     seen = {}
     monkeypatch.setattr("uvicorn.run", lambda app, **kw: seen.update(app=app, **kw))
     cli.main(["serve", "--port", "9001"])
-    assert seen["app"] == "llmops.app:create_app" and seen["factory"] is True
+    assert seen["app"] == "llmops.app:serve_app" and seen["factory"] is True
     assert seen["port"] == 9001 and seen["host"] == "127.0.0.1"
 
 
