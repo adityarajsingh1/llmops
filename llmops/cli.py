@@ -39,6 +39,11 @@ def main(argv: list[str] | None = None) -> None:
     new = ksub.add_parser("new", help="make a key for a team and print the gateway.yaml entry")
     new.add_argument("team")
 
+    usage = sub.add_parser("usage", help="tokens and cost per team and model for a month")
+    usage.add_argument("--db", help="usage database (default: LLMOPS_USAGE_DB or ./llmops-usage.db)")
+    usage.add_argument("--month", help="YYYY-MM (default: this month, UTC)")
+    usage.add_argument("--team", help="only this team")
+
     sub.add_parser("version", help="print the version")
 
     args = parser.parse_args(argv)
@@ -47,6 +52,8 @@ def main(argv: list[str] | None = None) -> None:
         return
     if args.command == "prompts":
         sys.exit(prompts_command(args))
+    if args.command == "usage":
+        sys.exit(usage_command(args))
     if args.command == "keys":
         keys_new(args.team)
         return
@@ -82,6 +89,43 @@ _BlockDumper.add_representer(str, _str_presenter)
 def _as_text(v: PromptVersion) -> str:
     data = v.model_dump(exclude_none=True, exclude={"version", "note"})
     return yaml.dump(data, Dumper=_BlockDumper, sort_keys=False, allow_unicode=True, width=100)
+
+
+def usage_command(args: argparse.Namespace) -> int:
+    from pathlib import Path
+
+    from llmops.budgets import month_range
+    from llmops.usage import SQLiteUsageStore
+
+    db = args.db or get_settings().usage_db
+    if not Path(db).is_file():
+        print(f"error: no usage database at {db}", file=sys.stderr)
+        return 1
+    try:
+        start, end = month_range(args.month)
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    store = SQLiteUsageStore(db)
+    try:
+        rows = store.summary(start, end, team=args.team)
+    finally:
+        store.close()
+    print(f"usage for {start:%Y-%m} (UTC)\n")
+    header = (
+        f"{'team':<16} {'model':<24} {'requests':>9} {'tokens in':>11} {'tokens out':>11} {'cost USD':>11}"
+    )
+    print(header)
+    print("-" * len(header))
+    for r in rows:
+        print(
+            f"{r.team:<16} {r.model:<24} {r.requests:>9} {r.prompt_tokens:>11} "
+            f"{r.completion_tokens:>11} {r.cost_usd:>11.4f}"
+        )
+    total = sum(r.cost_usd for r in rows)
+    print("-" * len(header))
+    print(f"{'total':<16} {'':<24} {sum(r.requests for r in rows):>9} {'':>11} {'':>11} {total:>11.4f}")
+    return 0
 
 
 def keys_new(team: str) -> None:

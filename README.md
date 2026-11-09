@@ -29,7 +29,7 @@ The plan for llmops:
 - an OpenAI-compatible `/v1/chat/completions` endpoint with an API key per team
 - retries with backoff, timeouts, fallback models and a circuit breaker per provider
 - JSON logs and OpenTelemetry traces, tied together by a request id
-- token and cost accounting: every answered request is recorded per team and model (SQLite by default)
+- token and cost accounting per team and model, with a usage endpoint and a `llmops usage` report
 - monthly budgets per team that block requests or just warn once they're used up
 
 ```bash
@@ -73,6 +73,35 @@ Every call to a provider gets a timeout and is retried with exponential backoff 
 If a model still fails, the gateway tries its `fallbacks` in order, so a request for `gpt-5-mini` can be answered by `claude-haiku` during an OpenAI outage. The response's `model` field says which model actually answered. A request the provider rejected as invalid (400, 413, 422) isn't sent to the fallbacks, since they would reject it too.
 
 Each provider has a circuit breaker. After 5 failures in a row it opens and the gateway stops calling that provider for 30 seconds, so requests go straight to the fallback instead of waiting on timeouts. Then one trial request is let through, and a success closes the breaker again. All of these numbers are under `reliability:` in `gateway.yaml`.
+
+### Costs and budgets
+
+Give a model a price in `gateway.yaml` (USD per million input and output tokens, as on the provider's pricing page) and every answered request is recorded with its team, model, tokens and cost. After a fallback, the cost is the price of the model that actually answered. Records go to a SQLite file (`LLMOPS_USAGE_DB`, default `llmops-usage.db`), which is enough for one gateway. Several gateways sharing usage would need a networked store; `UsageStore` in `usage.py` is the interface to implement.
+
+```yaml
+models:
+  gpt-5-mini: {provider: openai, price: {input: 0.25, output: 2.0}}   # check your provider's real prices
+teams:
+  - name: search
+    key_sha256: ...
+    budget: {monthly_usd: 200, on_exceed: block, warn_at: 0.8}
+```
+
+A team's budget resets at the start of each month (UTC). From `warn_at` (80% by default), responses carry an `x-llmops-budget-warning` header. Once the budget is used up, requests fail with a 429 `insufficient_quota` error, like OpenAI's, or with `on_exceed: warn` they still go through with the warning. Every response also has `x-llmops-cost-usd`, and `x-llmops-budget-remaining-usd` for teams with a budget. Spend is checked before each call, because the cost is only known afterwards, so a team can go over by about one request.
+
+To see the numbers:
+
+```bash
+curl -H "Authorization: Bearer $KEY" http://127.0.0.1:8000/v1/usage            # your team, this month
+curl -H "Authorization: Bearer $KEY" "http://127.0.0.1:8000/v1/usage?month=2026-10"
+llmops usage --month 2026-11                                                    # every team, from the database
+```
+
+```
+team             model                     requests   tokens in  tokens out    cost USD
+---------------------------------------------------------------------------------------
+demo             echo                             2           2           6      0.0000
+```
 
 ### Logs and traces
 

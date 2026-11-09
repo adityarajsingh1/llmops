@@ -73,3 +73,49 @@ def test_keys_new_prints_a_key_and_its_hash(capsys):
     key = out.split("key for search: ")[1].split()[0]
     assert key.startswith("llmops-")
     assert f"key_sha256: {hash_key(key)}" in out
+
+
+def test_usage_report(tmp_path, capsys):
+    from datetime import datetime, timezone
+
+    from llmops.usage import SQLiteUsageStore, UsageRecord
+
+    db = tmp_path / "usage.db"
+    store = SQLiteUsageStore(db)
+    for team, model, cost in [
+        ("search", "gpt-5-mini", 0.5),
+        ("search", "gpt-5-mini", 0.25),
+        ("ops", "echo", 0),
+    ]:
+        store.record(
+            UsageRecord(
+                ts=datetime(2026, 11, 3, tzinfo=timezone.utc),
+                team=team,
+                model=model,
+                provider="p",
+                prompt_tokens=100,
+                completion_tokens=40,
+                cost_usd=cost,
+            )
+        )
+    store.close()
+
+    with pytest.raises(SystemExit) as code:
+        cli.main(["usage", "--db", str(db), "--month", "2026-11"])
+    out = capsys.readouterr().out
+    assert code.value.code == 0
+    lines = out.splitlines()
+    search = next(line for line in lines if line.startswith("search"))
+    assert search.split() == ["search", "gpt-5-mini", "2", "200", "80", "0.7500"]
+    assert next(line for line in lines if line.startswith("total")).split() == ["total", "3", "0.7500"]
+
+    with pytest.raises(SystemExit) as code:
+        cli.main(["usage", "--db", str(db), "--month", "2026-10", "--team", "search"])
+    lines = capsys.readouterr().out.splitlines()
+    assert code.value.code == 0 and not any(line.startswith("search") for line in lines)
+
+
+def test_usage_report_errors(tmp_path, capsys):
+    with pytest.raises(SystemExit) as code:
+        cli.main(["usage", "--db", str(tmp_path / "missing.db")])
+    assert code.value.code == 1 and "no usage database" in capsys.readouterr().err

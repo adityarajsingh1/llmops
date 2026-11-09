@@ -41,6 +41,23 @@ def month_start(now: datetime | None = None) -> datetime:
     return now.astimezone(timezone.utc).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
 
+def month_range(month: str | None = None) -> tuple[datetime, datetime]:
+    """Start and end (exclusive) of a month given as YYYY-MM, in UTC. Default: the current month."""
+    if month is None:
+        start = month_start()
+    else:
+        try:
+            start = datetime.strptime(month, "%Y-%m").replace(tzinfo=timezone.utc)
+        except ValueError:
+            raise ValueError(f"month must look like 2026-11, got '{month}'") from None
+    end = (
+        start.replace(year=start.year + 1, month=1)
+        if start.month == 12
+        else start.replace(month=start.month + 1)
+    )
+    return start, end
+
+
 def check(budget: Budget, spent: float) -> BudgetStatus:
     exceeded = spent >= budget.monthly_usd
     warning = None

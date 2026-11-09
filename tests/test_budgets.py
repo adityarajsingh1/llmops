@@ -107,3 +107,45 @@ def test_teams_without_a_budget_get_no_budget_headers(settings):
     client, _ = make_client(settings)
     r = chat(client)
     assert r.status_code == 200 and "x-llmops-budget-remaining-usd" not in r.headers
+
+
+def test_month_range():
+    from llmops.budgets import month_range
+
+    assert month_range("2026-12") == (
+        datetime(2026, 12, 1, tzinfo=timezone.utc),
+        datetime(2027, 1, 1, tzinfo=timezone.utc),
+    )
+    with pytest.raises(ValueError, match="2026-11"):
+        month_range("2026-13")
+
+
+def usage_for(client, key=SEARCH, **params):
+    return client.get("/v1/usage", params=params, headers={"Authorization": f"Bearer {key}"})
+
+
+def test_usage_endpoint_shows_this_months_spend(settings):
+    client, _ = budget_client(settings, spent=2.5)
+    chat(client)
+    body = usage_for(client).json()
+    assert body["team"] == "search" and body["budget_usd"] == 10
+    assert body["spent_usd"] > 2.5 and body["remaining_usd"] == pytest.approx(10 - body["spent_usd"])
+    assert [m["model"] for m in body["models"]] == ["echo"] and body["models"][0]["requests"] == 2
+
+
+def test_usage_endpoint_for_an_earlier_month(settings):
+    client, _ = budget_client(settings, spent=0)
+    last_month = month_start() - timedelta(days=1)
+    body = usage_for(client, month=f"{last_month:%Y-%m}").json()
+    assert body["spent_usd"] == 1000 and body["remaining_usd"] == 0
+
+
+@pytest.mark.parametrize("month", ["2026-13", "november", "2026-1"])
+def test_usage_endpoint_rejects_bad_months(settings, month):
+    client, _ = budget_client(settings, spent=0)
+    assert usage_for(client, month=month).status_code == 400
+
+
+def test_usage_endpoint_needs_a_key(settings):
+    client, _ = budget_client(settings, spent=0)
+    assert usage_for(client, key="wrong").status_code == 401

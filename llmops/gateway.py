@@ -16,7 +16,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Literal
 
-from fastapi import APIRouter, Request, Response
+from fastapi import APIRouter, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from opentelemetry import trace
@@ -133,6 +133,24 @@ class ChatCompletion(BaseModel):
     model: str
     choices: list[Choice]
     usage: WireUsage
+
+
+class ModelUsage(BaseModel):
+    model: str
+    requests: int
+    prompt_tokens: int
+    completion_tokens: int
+    cost_usd: float
+
+
+class TeamUsage(BaseModel):
+    object: Literal["usage"] = "usage"
+    team: str
+    month: str
+    spent_usd: float
+    budget_usd: float | None
+    remaining_usd: float | None
+    models: list[ModelUsage]
 
 
 class ModelCard(BaseModel):
@@ -357,4 +375,28 @@ async def list_models(request: Request) -> ModelList:
             for alias, route in sorted(gateway.config.models.items())
             if team.may_use(alias)
         ]
+    )
+
+
+@router.get("/usage", response_model=TeamUsage)
+async def team_usage(
+    request: Request, month: str | None = Query(default=None, pattern=r"^\d{4}-\d{2}$")
+) -> TeamUsage:
+    """What the calling team spent in a month (default: this one), per model. llmops extension."""
+    gateway = _gateway(request)
+    team = gateway.authenticate(request.headers.get("authorization"))
+    try:
+        start, end = budgets.month_range(month)
+    except ValueError as e:
+        raise GatewayError(400, str(e), "invalid_request") from None
+    rows = gateway.usage.summary(start, end, team=team.name)
+    spent = sum(r.cost_usd for r in rows)
+    budget = team.budget.monthly_usd if team.budget else None
+    return TeamUsage(
+        team=team.name,
+        month=start.strftime("%Y-%m"),
+        spent_usd=round(spent, 6),
+        budget_usd=budget,
+        remaining_usd=None if budget is None else round(max(0.0, budget - spent), 6),
+        models=[ModelUsage(**r.model_dump(exclude={"team"})) for r in rows],
     )
