@@ -42,10 +42,11 @@ def make_client(settings, fake=None, **config_overrides):
     return TestClient(create_app(settings, gateway)), fake
 
 
-def chat(client, key=SEARCH, **body):
+def chat(client, key=SEARCH, headers=None, **body):
     body.setdefault("model", "echo")
     body.setdefault("messages", [{"role": "user", "content": "hello there"}])
-    return client.post("/v1/chat/completions", json=body, headers={"Authorization": f"Bearer {key}"})
+    headers = {"Authorization": f"Bearer {key}", **(headers or {})}
+    return client.post("/v1/chat/completions", json=body, headers=headers)
 
 
 def error_code(r):

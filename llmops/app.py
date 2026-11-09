@@ -15,6 +15,7 @@ from llmops.gateway import Gateway, GatewayError, gateway_error_handler, router,
 from llmops.observability import configure_logging, configure_tracing, observe_request
 from llmops.prompts import PromptRegistry
 from llmops.settings import Settings, get_settings
+from llmops.usage import open_store
 
 
 class Health(BaseModel):
@@ -30,7 +31,7 @@ def load_gateway(settings: Settings) -> Gateway:
     app still starts (and answers /health) before anything is configured."""
     config = GatewayConfig.load(settings.config) if Path(settings.config).is_file() else GatewayConfig()
     prompts = PromptRegistry.from_dir(settings.prompts_dir) if Path(settings.prompts_dir).is_dir() else None
-    return Gateway(config, prompts)
+    return Gateway(config, prompts, usage=open_store(settings.usage_db))
 
 
 def create_app(settings: Settings | None = None, gateway: Gateway | None = None) -> FastAPI:

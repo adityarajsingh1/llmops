@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 
 from llmops.providers import Provider, create
 from llmops.reliability import ReliabilityConfig
+from llmops.usage import Price
 
 
 class ConfigError(Exception):
@@ -47,6 +48,8 @@ class ModelRoute(BaseModel):
     upstream: str | None = None
     # other models (by their names here) to try, in order, when this one's provider is down
     fallbacks: list[str] = Field(default_factory=list)
+    # USD per million tokens; without a price the model's calls are recorded with a cost of 0
+    price: Price | None = None
 
 
 class Team(BaseModel):

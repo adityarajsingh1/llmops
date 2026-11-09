@@ -9,7 +9,11 @@ from llmops.settings import Settings
 def settings(tmp_path) -> Settings:
     # built explicitly so a developer's own .env, gateway.yaml or LLMOPS_* variables can't leak into tests
     return Settings(
-        _env_file=None, environment="dev", instance_name="test-gateway", config=str(tmp_path / "none.yaml")
+        _env_file=None,
+        environment="dev",
+        instance_name="test-gateway",
+        config=str(tmp_path / "none.yaml"),
+        usage_db="memory",
     )
 
 

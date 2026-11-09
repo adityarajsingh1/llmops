@@ -29,6 +29,7 @@ The plan for llmops:
 - an OpenAI-compatible `/v1/chat/completions` endpoint with an API key per team
 - retries with backoff, timeouts, fallback models and a circuit breaker per provider
 - JSON logs and OpenTelemetry traces, tied together by a request id
+- token and cost accounting: every answered request is recorded per team and model (SQLite by default)
 
 ```bash
 pip install -e ".[dev]"

@@ -15,7 +15,7 @@ import time
 import uuid
 from typing import Any, Literal
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from opentelemetry import trace
@@ -23,9 +23,11 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from llmops.auth import bearer_token, find_owner
 from llmops.config import ConfigError, GatewayConfig, Team
+from llmops.observability import request_id_var
 from llmops.prompts import PromptError, PromptRegistry
 from llmops.providers import ChatMessage, CompletionRequest, CompletionResponse, Provider, ProviderError
 from llmops.reliability import CircuitBreaker, Sleep, call_with_retries
+from llmops.usage import MemoryUsageStore, UsageRecord, UsageStore
 
 log = logging.getLogger("llmops.gateway")
 tracer = trace.get_tracer("llmops")
@@ -155,6 +157,7 @@ class Gateway:
         prompts: PromptRegistry | None = None,
         providers: dict[str, Provider] | None = None,
         sleep: Sleep = asyncio.sleep,
+        usage: UsageStore | None = None,
     ):
         self.config = config
         self.prompts = prompts or PromptRegistry([])
@@ -162,6 +165,12 @@ class Gateway:
         # one breaker per provider: an outage hits every model on it
         self.breakers = {name: CircuitBreaker(config.reliability.breaker) for name in config.providers}
         self._sleep = sleep
+        self.usage = usage or MemoryUsageStore()
+        unpriced = sorted(alias for alias, route in config.models.items() if route.price is None)
+        if unpriced:
+            log.warning(
+                "models without a price count as free in usage and budgets", extra={"models": unpriced}
+            )
 
     def authenticate(self, authorization: str | None) -> Team:
         key = bearer_token(authorization)
@@ -256,9 +265,25 @@ class Gateway:
             raise GatewayError(503, str(last), "provider_unavailable", "api_error")
         raise GatewayError(502, str(last), "provider_error", "api_error")
 
+    def record_usage(self, team: Team, alias: str, resp: CompletionResponse) -> UsageRecord:
+        """Write the usage of one answered request, priced by the model that answered."""
+        route = self.config.models[alias]
+        rec = UsageRecord(
+            team=team.name,
+            model=alias,
+            provider=route.provider,
+            prompt_tokens=resp.usage.prompt_tokens,
+            completion_tokens=resp.usage.completion_tokens,
+            cost_usd=route.price.cost(resp.usage) if route.price else 0.0,
+            request_id=request_id_var.get(),
+        )
+        self.usage.record(rec)
+        return rec
+
     async def aclose(self) -> None:
         for p in self._providers.values():
             await p.aclose()
+        self.usage.close()
 
 
 router = APIRouter(prefix="/v1", tags=["openai-compatible"])
@@ -270,7 +295,9 @@ def _gateway(request: Request) -> Gateway:
 
 
 @router.post("/chat/completions", response_model=ChatCompletion)
-async def chat_completions(body: ChatCompletionRequest, request: Request) -> ChatCompletion:
+async def chat_completions(
+    body: ChatCompletionRequest, request: Request, response: Response
+) -> ChatCompletion:
     gateway = _gateway(request)
     team = gateway.authenticate(request.headers.get("authorization"))
     request.state.team = team.name
@@ -280,6 +307,8 @@ async def chat_completions(body: ChatCompletionRequest, request: Request) -> Cha
     request.state.model = alias
     # `model` in the response is the one that answered, which differs from the request after a fallback
     alias, resp = await gateway.complete(alias, upstream)
+    rec = gateway.record_usage(team, alias, resp)
+    response.headers["x-llmops-cost-usd"] = f"{rec.cost_usd:.6f}"
     return ChatCompletion(
         id=f"chatcmpl-{uuid.uuid4().hex}",
         created=int(time.time()),

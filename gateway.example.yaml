@@ -16,10 +16,13 @@ providers:
     type: fake
 
 # The model names clients send, and where each one goes.
+# `price` is USD per million input/output tokens. The numbers below are
+# placeholders to show the format: copy the real ones from your provider's
+# pricing page. A model without a price counts as free in usage and budgets.
 models:
   # if OpenAI is down (after retries), the same request goes to claude-haiku
-  gpt-5-mini: {provider: openai, fallbacks: [claude-haiku]}
-  claude-haiku: {provider: anthropic, upstream: claude-haiku-4-5}
+  gpt-5-mini: {provider: openai, fallbacks: [claude-haiku], price: {input: 0.25, output: 2.0}}
+  claude-haiku: {provider: anthropic, upstream: claude-haiku-4-5, price: {input: 1.0, output: 5.0}}
   llama3: {provider: local, upstream: "llama3.1:8b"}
   echo: {provider: demo}
 

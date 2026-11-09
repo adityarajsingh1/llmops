@@ -26,6 +26,8 @@ class Settings(BaseSettings):
     prompts_dir: str = "prompts"
     # providers, models and team keys; see gateway.example.yaml
     config: str = "gateway.yaml"
+    # where token and cost records go: a SQLite file, or "memory" to keep them only until restart
+    usage_db: str = "llmops-usage.db"
 
 
 @lru_cache
