@@ -12,6 +12,7 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
+from llmops.budgets import Budget
 from llmops.providers import Provider, create
 from llmops.reliability import ReliabilityConfig
 from llmops.usage import Price
@@ -59,6 +60,8 @@ class Team(BaseModel):
     key_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     # models this team may use; empty means all of them
     models: list[str] = Field(default_factory=list)
+    # no budget means no limit (usage is still recorded)
+    budget: Budget | None = None
 
     def may_use(self, model: str) -> bool:
         return not self.models or model in self.models

@@ -13,6 +13,7 @@ import functools
 import logging
 import time
 import uuid
+from datetime import datetime
 from typing import Any, Literal
 
 from fastapi import APIRouter, Request, Response
@@ -21,6 +22,7 @@ from fastapi.responses import JSONResponse
 from opentelemetry import trace
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from llmops import budgets
 from llmops.auth import bearer_token, find_owner
 from llmops.config import ConfigError, GatewayConfig, Team
 from llmops.observability import request_id_var
@@ -265,6 +267,23 @@ class Gateway:
             raise GatewayError(503, str(last), "provider_unavailable", "api_error")
         raise GatewayError(502, str(last), "provider_error", "api_error")
 
+    def check_budget(self, team: Team, now: datetime | None = None) -> budgets.BudgetStatus | None:
+        """The team's budget status, or a 429 if the budget is used up and set to block."""
+        if team.budget is None:
+            return None
+        spent = self.usage.spend(team.name, budgets.month_start(now))
+        status = budgets.check(team.budget, spent)
+        if status.exceeded:
+            if team.budget.on_exceed == "block":
+                raise GatewayError(
+                    429,
+                    f"team '{team.name}': {status.warning}",
+                    "budget_exceeded",
+                    "insufficient_quota",
+                )
+            log.warning("team over budget", extra={"team": team.name, "spent_usd": round(spent, 4)})
+        return status
+
     def record_usage(self, team: Team, alias: str, resp: CompletionResponse) -> UsageRecord:
         """Write the usage of one answered request, priced by the model that answered."""
         route = self.config.models[alias]
@@ -305,10 +324,16 @@ async def chat_completions(
         raise GatewayError(400, "streaming isn't supported yet; send stream: false", "unsupported")
     alias, upstream = gateway.build_request(body, team)
     request.state.model = alias
+    budget = gateway.check_budget(team)
     # `model` in the response is the one that answered, which differs from the request after a fallback
     alias, resp = await gateway.complete(alias, upstream)
     rec = gateway.record_usage(team, alias, resp)
     response.headers["x-llmops-cost-usd"] = f"{rec.cost_usd:.6f}"
+    if budget is not None:
+        # as of before this request; the next one will see this request's cost too
+        response.headers["x-llmops-budget-remaining-usd"] = f"{budget.remaining_usd:.4f}"
+        if budget.warning:
+            response.headers["x-llmops-budget-warning"] = budget.warning
     return ChatCompletion(
         id=f"chatcmpl-{uuid.uuid4().hex}",
         created=int(time.time()),

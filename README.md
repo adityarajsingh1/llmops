@@ -30,6 +30,7 @@ The plan for llmops:
 - retries with backoff, timeouts, fallback models and a circuit breaker per provider
 - JSON logs and OpenTelemetry traces, tied together by a request id
 - token and cost accounting: every answered request is recorded per team and model (SQLite by default)
+- monthly budgets per team that block requests or just warn once they're used up
 
 ```bash
 pip install -e ".[dev]"

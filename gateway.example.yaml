@@ -33,6 +33,12 @@ teams:
     # the key for this hash is: llmops-demo-key-do-not-use-in-prod
     key_sha256: 3bd90f79c958a01cd4fee01778560adce98eac34e4c0f5e8185b5edda8bac6b4
     models: [echo]
+  # - name: search
+  #   key_sha256: ...
+  #   budget:
+  #     monthly_usd: 200
+  #     on_exceed: block   # or warn: let requests through, with a warning header
+  #     warn_at: 0.8       # responses carry a warning header from 80% of the budget
 
 # Optional; these are the defaults.
 reliability:
