@@ -1,0 +1,61 @@
+name: Prompt evals
+
+# Runs the eval suites against the base branch's prompts and the pull request's,
+# and fails if a score drops by more than 5 percentage points.
+on:
+  pull_request:
+    paths: ["prompts/**", "evals/**"]
+
+permissions:
+  contents: read
+
+jobs:
+  evals:
+    runs-on: ubuntu-latest
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install
+        run: pip install -e .
+
+      - name: Check suites and prompts
+        # runs even without a key: catches broken YAML and unknown check types
+        run: |
+          llmops prompts check
+          llmops eval check evals/*.yaml
+
+      - name: Need an API key
+        id: key
+        run: |
+          if [ -z "$OPENAI_API_KEY" ]; then
+            echo "::notice::No OPENAI_API_KEY secret (forks don't get one), so the model evals are skipped."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Evaluate the base branch's prompts
+        if: steps.key.outputs.skip != 'true'
+        run: |
+          mkdir -p "$RUNNER_TEMP/base"
+          git archive "origin/${{ github.base_ref }}" prompts | tar -x -C "$RUNNER_TEMP/base"
+          llmops eval run evals/*.yaml --skip-missing --config evals/config/gateway.ci.yaml \
+            --prompts "$RUNNER_TEMP/base/prompts" --out "$RUNNER_TEMP/base.json"
+
+      - name: Evaluate this pull request's prompts
+        if: steps.key.outputs.skip != 'true'
+        run: llmops eval run evals/*.yaml --config evals/config/gateway.ci.yaml --out "$RUNNER_TEMP/pr.json"
+
+      - name: Compare
+        if: steps.key.outputs.skip != 'true'
+        run: |
+          echo "## Prompt evals" >> "$GITHUB_STEP_SUMMARY"
+          llmops eval compare "$RUNNER_TEMP/base.json" "$RUNNER_TEMP/pr.json" --max-drop 0.05 | tee -a "$GITHUB_STEP_SUMMARY"

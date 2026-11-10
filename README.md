@@ -32,6 +32,7 @@ The plan for llmops:
 - token and cost accounting per team and model, with a usage endpoint and a `llmops usage` report
 - monthly budgets per team that block requests or just warn once they're used up
 - Prometheus metrics at `/metrics`
+- offline evals for prompts, with a GitHub Action that fails a pull request when a prompt change makes the scores drop
 
 ```bash
 pip install -e ".[dev]"
@@ -157,6 +158,41 @@ LLMOPS_OTEL_ENDPOINT=http://localhost:4318/v1/traces llmops serve
 ```
 
 Without that setting the spans are still created, but they cost next to nothing and go nowhere. API keys and prompt text are never logged.
+
+### Evals: catching prompt changes that make answers worse
+
+A prompt edit that looks harmless can quietly break something: the model starts inventing prices again, or stops handing off questions it can't answer. Evals catch that before it ships. A suite in `evals/` lists cases for one prompt (the variables to fill in and checks the answer has to pass):
+
+```yaml
+prompt: support-reply
+checks:                                # run on every case
+  - {type: not_contains, value: "as an AI"}
+cases:
+  - id: no-made-up-prices
+    variables:
+      product: Acme Cloud
+      article: "The Team plan adds shared workspaces and SSO. See the pricing page for current prices."
+      question: How much does the Team plan cost?
+    checks:
+      - {type: regex, pattern: '[$€£]\s?\d', must_match: false}   # no price is in the article
+      - {type: contains_any, values: ["pricing page", "colleague"]}
+```
+
+The built-in checks are `contains`, `not_contains`, `contains_any`, `regex` (with `must_match: false` for "must not match"), `max_words` and `json` (valid JSON, optionally with required keys). They're deterministic on purpose: cheap, no second model call, and the same answer always gets the same score. A new check is one class with `@register_scorer` in `llmops/evals/scorers.py`, or it can live in another package and plug in through the `llmops.scorers` entry point group. An LLM-as-judge scorer for things like tone would fit the same way.
+
+A case's score is the share of its checks that passed, and a suite's score is the average over its cases.
+
+```bash
+llmops eval check evals/*.yaml                                   # validate, no model calls
+llmops eval run evals/*.yaml --config gateway.yaml               # the active versions
+llmops eval run evals/support-reply.yaml --version 1 --out v1.json
+llmops eval run evals/support-reply.yaml --version 2 --out v2.json
+llmops eval compare v1.json v2.json --max-drop 0.05              # exit code 1 if a score dropped more
+```
+
+Models are called through the gateway config, so evals get the same retries and fallbacks as live traffic. One suite works for every version of a prompt: a variable that only some versions use (like `article`) is left out for the others, while a misspelled variable still fails.
+
+**In CI**, `.github/workflows/evals.yml` runs on pull requests that touch `prompts/` or `evals/`. It runs the suites against the base branch's prompts and against the PR's, then compares them. The PR fails if a suite's score drops by more than 5 points, and the comparison table goes into the job summary. It needs an `OPENAI_API_KEY` repository secret, with models listed in `evals/config/gateway.ci.yaml`. Without the secret (pull requests from forks never get one), it still validates the files and skips the model calls with a notice. Model answers vary a little from run to run, which is why there's an allowed drop rather than none.
 
 ### Providers
 

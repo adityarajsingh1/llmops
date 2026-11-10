@@ -1,0 +1,28 @@
+prompt: summarize-ticket
+description: short summaries that keep what's still open
+
+checks:
+  - {type: max_words, max_words: 90}
+
+cases:
+  - id: vpn-drops
+    variables:
+      thread: |
+        Customer: The VPN client disconnects every 10 minutes since yesterday's update.
+        Agent: Please try reinstalling version 4.2.1.
+        Customer: Reinstalled, still disconnects. It happens on Wi-Fi and on ethernet.
+        Agent: Thanks, I've asked the network team to look at the logs.
+    checks:
+      - {type: contains, value: "VPN"}
+      - {type: contains_any, values: ["reinstall", "4.2.1"]}
+      - {type: contains_any, values: ["network team", "logs", "open", "pending"]}
+
+  - id: invoice-address
+    variables:
+      thread: |
+        Customer: Our invoices still show the old office address.
+        Agent: I've updated it in billing; the next invoice will use the new one.
+        Customer: Can you also reissue the October invoice?
+    checks:
+      - {type: contains, value: "invoice"}
+      - {type: contains, value: "October"}

@@ -127,3 +127,33 @@ def test_a_new_suite_passes_and_fixes_are_listed():
     assert a.ok and [f.id for f in a.fixes] == ["c0"] and a.delta == 0.5
     assert b.ok and b.before == b.after == 0
     assert "| b | 0.0% | 0.0% | +0.0% | ok |" in to_markdown([a, b], 0)
+
+
+def test_skip_missing_for_a_brand_new_prompt(project, tmp_path, capsys):
+    empty = tmp_path / "base-prompts"
+    empty.mkdir()
+    suite, config = str(project / "evals" / "greet.yaml"), str(project / "gateway.yaml")
+    assert run_cli("eval", "run", suite, "--prompts", str(empty), "--config", config) == 1
+    assert "no prompt called 'greet'" in capsys.readouterr().err
+
+    out = tmp_path / "base.json"
+    args = ["eval", "run", suite, "--prompts", str(empty), "--config", config, "--skip-missing"]
+    assert run_cli(*args, "--out", str(out)) == 0
+    assert json.loads(out.read_text()) == {"results": []}
+
+
+def test_check(project, capsys):
+    suite, prompts = str(project / "evals" / "greet.yaml"), str(project / "prompts")
+    assert run_cli("eval", "check", suite, "--prompts", prompts) == 0
+    assert "ok:" in capsys.readouterr().out
+    (project / "prompts" / "greet.yaml").write_text(PROMPT_V1.replace("greet", "hello"))
+    assert run_cli("eval", "check", suite, "--prompts", prompts) == 1
+
+
+def test_example_suites_are_valid(capsys):
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    suites = sorted(str(p) for p in (root / "evals").glob("*.yaml"))
+    assert len(suites) == 2
+    assert run_cli("eval", "check", *suites, "--prompts", str(root / "prompts")) == 0

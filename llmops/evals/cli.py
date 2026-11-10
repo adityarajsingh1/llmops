@@ -21,6 +21,8 @@ def eval_command(args: argparse.Namespace) -> int:
     try:
         if args.action == "run":
             return asyncio.run(_run(args))
+        if args.action == "check":
+            return _check(args)
         return _compare(args)
     except (SuiteError, PromptError, ConfigError) as e:
         print(f"error: {e}", file=sys.stderr)
@@ -31,6 +33,11 @@ async def _run(args: argparse.Namespace) -> int:
     settings = get_settings()
     prompts = PromptRegistry.from_dir(args.prompts or settings.prompts_dir)
     suites = [EvalSuite.load(p) for p in args.suites]
+    if args.skip_missing:
+        for s in suites:
+            if s.prompt not in prompts.names():
+                print(f"skipping {s.prompt}: no such prompt in {args.prompts or settings.prompts_dir}")
+        suites = [s for s in suites if s.prompt in prompts.names()]
     gateway = Gateway(GatewayConfig.load(args.config or settings.config), prompts)
 
     for suite in suites:
@@ -62,6 +69,15 @@ async def _run(args: argparse.Namespace) -> int:
             f"FAIL: {r.prompt} scored {r.score:.1%}, below --min-score {args.min_score:.1%}", file=sys.stderr
         )
     return 1 if low else 0
+
+
+def _check(args: argparse.Namespace) -> int:
+    prompts = PromptRegistry.from_dir(args.prompts or get_settings().prompts_dir)
+    for path in args.suites:
+        suite = EvalSuite.load(path)
+        prompts[suite.prompt]  # raises if the prompt doesn't exist
+        print(f"ok: {path} ({suite.prompt}, {len(suite.cases)} cases)")
+    return 0
 
 
 def _print_result(result: SuiteResult) -> None:

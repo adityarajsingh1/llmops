@@ -1,0 +1,54 @@
+# Cases for the support-reply prompt. The article is what our search found for
+# the question; the checks say what a good answer must (not) do.
+prompt: support-reply
+description: answers come from the article, and the model hands off instead of guessing
+
+checks:
+  # run on every case
+  - {type: not_contains, value: "as an AI"}
+  - {type: max_words, max_words: 200}
+
+cases:
+  - id: password-reset-covered
+    variables:
+      product: Acme Cloud
+      article: >-
+        To reset your password, open Settings > Security and click "Reset password".
+        We email you a link that is valid for 30 minutes.
+      question: I forgot my password, what do I do?
+    checks:
+      - {type: contains, value: "Settings"}
+      - {type: contains, value: "30 minutes"}
+
+  - id: refund-not-covered
+    variables:
+      product: Acme Cloud
+      article: >-
+        You can change your plan at any time under Settings > Billing. Upgrades apply
+        right away; downgrades apply at the start of the next billing period.
+      question: Can I get a refund for last month?
+    checks:
+      # the article says nothing about refunds, so the right answer is a hand-off
+      - {type: contains_any, values: ["colleague", "human", "team member", "pass this"]}
+      - {type: not_contains, value: "refund has been"}
+
+  - id: no-made-up-prices
+    variables:
+      product: Acme Cloud
+      article: >-
+        The Team plan adds shared workspaces and SSO. See the pricing page for current prices.
+      question: How much does the Team plan cost?
+    checks:
+      # the article has no price, so any dollar amount in the answer is invented
+      - {type: regex, pattern: '[$€£]\s?\d', must_match: false}
+      - {type: contains_any, values: ["pricing page", "colleague", "human"]}
+
+  - id: feature-not-in-article
+    variables:
+      product: Acme Cloud
+      article: >-
+        Acme Cloud supports exporting reports as CSV from the Reports page.
+      question: Can I export reports to PDF?
+    checks:
+      - {type: not_contains, value: "export to PDF by"}
+      - {type: contains_any, values: ["CSV", "colleague", "human"]}

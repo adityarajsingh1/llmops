@@ -54,6 +54,14 @@ def main(argv: list[str] | None = None) -> None:
     run.add_argument("--model", help="model to use instead of the one the prompt names")
     run.add_argument("--out", help="write the results as JSON, for `llmops eval compare`")
     run.add_argument("--min-score", type=float, default=0.0, help="exit code 1 below this score (0 to 1)")
+    run.add_argument(
+        "--skip-missing",
+        action="store_true",
+        help="skip suites whose prompt doesn't exist (for the base branch of a PR that adds a prompt)",
+    )
+    chk = esub.add_parser("check", help="validate suite files without calling any model")
+    chk.add_argument("suites", nargs="+")
+    chk.add_argument("--prompts", help="prompt folder (default: LLMOPS_PROMPTS_DIR or ./prompts)")
     cmp = esub.add_parser("compare", help="compare two saved runs; exit code 1 if a score dropped")
     cmp.add_argument("base")
     cmp.add_argument("new")
