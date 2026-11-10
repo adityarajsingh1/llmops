@@ -44,6 +44,21 @@ def main(argv: list[str] | None = None) -> None:
     usage.add_argument("--month", help="YYYY-MM (default: this month, UTC)")
     usage.add_argument("--team", help="only this team")
 
+    ev = sub.add_parser("eval", help="run eval suites against prompts and compare runs")
+    esub = ev.add_subparsers(dest="action", required=True)
+    run = esub.add_parser("run", help="run suites and print (or save) the scores")
+    run.add_argument("suites", nargs="+", help="suite files, e.g. evals/*.yaml")
+    run.add_argument("--prompts", help="prompt folder (default: LLMOPS_PROMPTS_DIR or ./prompts)")
+    run.add_argument("--config", help="gateway config with the models (default: LLMOPS_CONFIG)")
+    run.add_argument("--version", type=int, help="prompt version (default: the active one)")
+    run.add_argument("--model", help="model to use instead of the one the prompt names")
+    run.add_argument("--out", help="write the results as JSON, for `llmops eval compare`")
+    run.add_argument("--min-score", type=float, default=0.0, help="exit code 1 below this score (0 to 1)")
+    cmp = esub.add_parser("compare", help="compare two saved runs; exit code 1 if a score dropped")
+    cmp.add_argument("base")
+    cmp.add_argument("new")
+    cmp.add_argument("--max-drop", type=float, default=0.0, help="allowed score drop, e.g. 0.05")
+
     sub.add_parser("version", help="print the version")
 
     args = parser.parse_args(argv)
@@ -52,6 +67,10 @@ def main(argv: list[str] | None = None) -> None:
         return
     if args.command == "prompts":
         sys.exit(prompts_command(args))
+    if args.command == "eval":
+        from llmops.evals.cli import eval_command
+
+        sys.exit(eval_command(args))
     if args.command == "usage":
         sys.exit(usage_command(args))
     if args.command == "keys":
