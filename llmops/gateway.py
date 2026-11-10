@@ -25,6 +25,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from llmops import budgets
 from llmops.auth import bearer_token, find_owner
 from llmops.config import ConfigError, GatewayConfig, Team
+from llmops.metrics import Metrics
 from llmops.observability import request_id_var
 from llmops.prompts import PromptError, PromptRegistry
 from llmops.providers import ChatMessage, CompletionRequest, CompletionResponse, Provider, ProviderError
@@ -186,6 +187,7 @@ class Gateway:
         self.breakers = {name: CircuitBreaker(config.reliability.breaker) for name in config.providers}
         self._sleep = sleep
         self.usage = usage or MemoryUsageStore()
+        self.metrics = Metrics()
         unpriced = sorted(alias for alias, route in config.models.items() if route.price is None)
         if unpriced:
             log.warning(
@@ -315,6 +317,9 @@ class Gateway:
             request_id=request_id_var.get(),
         )
         self.usage.record(rec)
+        self.metrics.observe_usage(
+            rec.team, rec.model, rec.prompt_tokens, rec.completion_tokens, rec.cost_usd
+        )
         return rec
 
     async def aclose(self) -> None:
@@ -336,6 +341,26 @@ async def chat_completions(
     body: ChatCompletionRequest, request: Request, response: Response
 ) -> ChatCompletion:
     gateway = _gateway(request)
+    started = time.perf_counter()
+    status = 200
+    try:
+        return await _chat_completion(gateway, body, request, response)
+    except GatewayError as e:
+        status = e.status
+        raise
+    finally:
+        # labels only ever hold configured teams and models, so a stranger can't create new
+        # series by sending made-up names
+        model = getattr(request.state, "model", None)
+        if model is None:
+            model = body.model if body.model in gateway.config.models else "unknown"
+        team = getattr(request.state, "team", "unknown")
+        gateway.metrics.observe_request(team, model, status, time.perf_counter() - started)
+
+
+async def _chat_completion(
+    gateway: Gateway, body: ChatCompletionRequest, request: Request, response: Response
+) -> ChatCompletion:
     team = gateway.authenticate(request.headers.get("authorization"))
     request.state.team = team.name
     if body.stream:

@@ -5,8 +5,9 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from fastapi.exceptions import RequestValidationError
+from prometheus_client import CONTENT_TYPE_LATEST
 from pydantic import BaseModel
 
 from llmops import __version__
@@ -67,6 +68,13 @@ def create_app(settings: Settings | None = None, gateway: Gateway | None = None)
             instance=settings.instance_name,
             uptime_seconds=round(time.monotonic() - started, 3),
         )
+
+    if settings.metrics_enabled:
+
+        @app.get("/metrics", tags=["ops"], include_in_schema=False)
+        def metrics() -> Response:
+            """Prometheus metrics. Not behind a team key: keep it on an internal network."""
+            return Response(gw.metrics.render(), media_type=CONTENT_TYPE_LATEST)
 
     return app
 

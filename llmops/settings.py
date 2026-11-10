@@ -21,6 +21,8 @@ class Settings(BaseSettings):
     log_format: Literal["json", "text"] = "json"
     # OTLP/HTTP endpoint for traces, e.g. http://localhost:4318/v1/traces; unset means no export
     otel_endpoint: str | None = None
+    # serve Prometheus metrics at /metrics
+    metrics_enabled: bool = True
     # shown on /health so you can tell gateways apart when running several
     instance_name: str = "llmops"
     prompts_dir: str = "prompts"
