@@ -31,6 +31,7 @@ The plan for llmops:
 - JSON logs and OpenTelemetry traces, tied together by a request id
 - token and cost accounting per team and model, with a usage endpoint and a `llmops usage` report
 - monthly budgets per team that block requests or just warn once they're used up
+- Prometheus metrics at `/metrics`
 
 ```bash
 pip install -e ".[dev]"
@@ -102,6 +103,41 @@ team             model                     requests   tokens in  tokens out    c
 ---------------------------------------------------------------------------------------
 demo             echo                             2           2           6      0.0000
 ```
+
+### Metrics
+
+`/metrics` serves Prometheus metrics. It isn't behind a team key, so keep it on an internal network (or turn it off with `LLMOPS_METRICS_ENABLED=false`).
+
+| metric | labels | what it counts |
+|---|---|---|
+| `llmops_requests_total` | team, model, status | chat requests by outcome (200, 401, 429, 503, ...) |
+| `llmops_request_duration_seconds` | model | time to answer, retries and fallbacks included |
+| `llmops_tokens_total` | team, model, kind | prompt and completion tokens |
+| `llmops_cost_usd_total` | team, model | cost of answered requests |
+| `llmops_provider_duration_seconds` | provider, model | time spent on each model, all its tries together |
+| `llmops_provider_errors_total` | provider, retryable | failed tries, including ones a retry later hid |
+| `llmops_fallbacks_total` | model, fallback | requests that went to a fallback model |
+| `llmops_circuit_state` | provider | 0 closed, 1 half-open, 2 open |
+
+Labels only ever contain teams and models from `gateway.yaml`. A request for a model that doesn't exist is counted as `model="unknown"`, so nobody can blow up the number of series by sending random names.
+
+A few queries I find useful:
+
+```promql
+# p95 latency per model over 5 minutes
+histogram_quantile(0.95, sum by (model, le) (rate(llmops_request_duration_seconds_bucket[5m])))
+
+# share of requests that failed on the provider side
+sum(rate(llmops_requests_total{status=~"502|503"}[5m])) / sum(rate(llmops_requests_total[5m]))
+
+# spend per team today
+sum by (team) (increase(llmops_cost_usd_total[1d]))
+
+# retries that are hiding a struggling provider
+sum by (provider) (rate(llmops_provider_errors_total{retryable="true"}[5m]))
+```
+
+Counters reset when the gateway restarts, which `rate()` and `increase()` handle. For exact monthly numbers, use `llmops usage`, which reads the usage database.
 
 ### Logs and traces
 
