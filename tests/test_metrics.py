@@ -77,3 +77,24 @@ def test_other_endpoints_dont_count_as_chat_requests(settings, path):
     client, _ = make_client(settings)
     client.get(path, headers={"Authorization": f"Bearer {SEARCH}"})
     assert not any(name == "llmops_requests_total" for name, _ in scrape(client))
+
+
+def test_hidden_retries_and_fallbacks_show_up(settings):
+    # main fails twice (attempts: 2 in fallback_client), which opens its breaker; backup answers
+    client, _ = fallback_client(settings, FakeProvider(failing(503, 5)), FakeProvider(["ok", "ok"]))
+    chat(client, model="smart")
+    m = scrape(client)
+    assert value(m, "llmops_provider_errors_total", provider="main", retryable="true") == 2
+    assert value(m, "llmops_fallbacks_total", model="smart", fallback="cheap") == 1
+    assert value(m, "llmops_circuit_state", provider="main") == 2
+    assert value(m, "llmops_circuit_state", provider="backup") == 0
+    assert value(m, "llmops_provider_duration_seconds_count", provider="main", model="smart") == 1
+    assert value(m, "llmops_provider_duration_seconds_count", provider="backup", model="cheap") == 1
+
+
+def test_a_retry_that_succeeds_still_counts_the_error(settings):
+    client, _ = make_client(settings, fake=FakeProvider([*failing(429), "fine"]))
+    assert chat(client).status_code == 200
+    m = scrape(client)
+    assert value(m, "llmops_provider_errors_total", provider="demo", retryable="true") == 1
+    assert value(m, "llmops_requests_total", team="search", model="echo", status="200") == 1

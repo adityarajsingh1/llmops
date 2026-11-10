@@ -188,6 +188,8 @@ class Gateway:
         self._sleep = sleep
         self.usage = usage or MemoryUsageStore()
         self.metrics = Metrics()
+        for name, breaker in self.breakers.items():
+            self.metrics.watch_breaker(name, breaker)
         unpriced = sorted(alias for alias, route in config.models.items() if route.price is None)
         if unpriced:
             log.warning(
@@ -250,6 +252,7 @@ class Gateway:
             route = self.config.models[candidate]
             req = request.model_copy(update={"model": route.upstream or candidate})
             if candidate != alias:
+                self.metrics.fallbacks.labels(model=alias, fallback=candidate).inc()
                 log.warning(
                     "falling back", extra={"model": alias, "fallback": candidate, "reason": str(last)}
                 )
@@ -260,6 +263,7 @@ class Gateway:
                 span.set_attribute("gen_ai.request.model", req.model)
                 span.set_attribute("llmops.model", candidate)
                 span.set_attribute("llmops.fallback", candidate != alias)
+                started = time.perf_counter()
                 try:
                     provider = self.provider(route.provider)
                     resp = await call_with_retries(
@@ -268,6 +272,7 @@ class Gateway:
                         policy=self.config.reliability.retry,
                         breaker=self.breakers[route.provider],
                         sleep=self._sleep,
+                        on_error=functools.partial(self._count_error, route.provider),
                     )
                 except (ProviderError, GatewayError) as e:
                     span.set_status(trace.StatusCode.ERROR, str(e))
@@ -276,6 +281,10 @@ class Gateway:
                         raise GatewayError(502, str(e), "provider_error", "api_error") from None
                     last = e
                     continue
+                finally:
+                    self.metrics.provider_latency.labels(provider=route.provider, model=candidate).observe(
+                        time.perf_counter() - started
+                    )
                 span.set_attribute("gen_ai.response.model", resp.model)
                 span.set_attribute("gen_ai.usage.input_tokens", resp.usage.prompt_tokens)
                 span.set_attribute("gen_ai.usage.output_tokens", resp.usage.completion_tokens)
@@ -286,6 +295,9 @@ class Gateway:
         if last.retryable:
             raise GatewayError(503, str(last), "provider_unavailable", "api_error")
         raise GatewayError(502, str(last), "provider_error", "api_error")
+
+    def _count_error(self, provider: str, error: ProviderError) -> None:
+        self.metrics.provider_errors.labels(provider=provider, retryable=str(error.retryable).lower()).inc()
 
     def check_budget(self, team: Team, now: datetime | None = None) -> budgets.BudgetStatus | None:
         """The team's budget status, or a 429 if the budget is used up and set to block."""

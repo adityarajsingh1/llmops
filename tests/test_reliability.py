@@ -124,3 +124,20 @@ def test_half_open_lets_one_trial_through():
     assert breaker.allow()
     breaker.record_success()
     assert breaker.state == "closed" and breaker.failures == 0
+
+
+async def test_on_error_sees_every_failed_try():
+    seen: list[int | None] = []
+
+    async def sleep(s: float) -> None:
+        pass
+
+    result = await call_with_retries(
+        Script(err(500), err(429), "ok"),
+        provider="p",
+        policy=RetryPolicy(attempts=3, timeout=None),
+        breaker=CircuitBreaker(BreakerPolicy()),
+        sleep=sleep,
+        on_error=lambda e: seen.append(e.status),
+    )
+    assert result == "ok" and seen == [500, 429]

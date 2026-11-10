@@ -9,7 +9,9 @@ to keep the number of series small.
 
 from __future__ import annotations
 
-from prometheus_client import CollectorRegistry, Counter, Histogram, generate_latest
+from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram, generate_latest
+
+from llmops.reliability import CircuitBreaker
 
 # LLM calls are slow compared to normal HTTP, so the buckets go up to a minute
 LATENCY_BUCKETS = (0.1, 0.25, 0.5, 1, 2, 4, 8, 15, 30, 60)
@@ -40,6 +42,37 @@ class Metrics:
         self.cost = Counter(
             "llmops_cost_usd", "Cost of answered requests in USD", ["team", "model"], registry=self.registry
         )
+
+        self.provider_latency = Histogram(
+            "llmops_provider_duration_seconds",
+            "Time spent on one model, all its tries together",
+            ["provider", "model"],
+            buckets=LATENCY_BUCKETS,
+            registry=self.registry,
+        )
+        self.provider_errors = Counter(
+            "llmops_provider_errors",
+            "Failed tries against a provider, including ones a retry later hid",
+            ["provider", "retryable"],
+            registry=self.registry,
+        )
+        self.fallbacks = Counter(
+            "llmops_fallbacks",
+            "Requests that went to a fallback model",
+            ["model", "fallback"],
+            registry=self.registry,
+        )
+        self.circuit = Gauge(
+            "llmops_circuit_state",
+            "Circuit breaker per provider: 0 closed, 1 half-open, 2 open",
+            ["provider"],
+            registry=self.registry,
+        )
+
+    def watch_breaker(self, provider: str, breaker: CircuitBreaker) -> None:
+        """Read the breaker's state at scrape time, so the gauge is never stale."""
+        codes = {"closed": 0, "half-open": 1, "open": 2}
+        self.circuit.labels(provider=provider).set_function(lambda: codes[breaker.state])
 
     def observe_request(self, team: str, model: str, status: int, seconds: float) -> None:
         self.requests.labels(team=team, model=model, status=str(status)).inc()

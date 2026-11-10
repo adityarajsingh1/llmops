@@ -109,8 +109,10 @@ async def call_with_retries(
     policy: RetryPolicy,
     breaker: CircuitBreaker,
     sleep: Sleep = asyncio.sleep,
+    on_error: Callable[[ProviderError], None] | None = None,
 ) -> T:
-    """Run `call`, retrying retryable ProviderErrors with backoff. Raises the last error."""
+    """Run `call`, retrying retryable ProviderErrors with backoff. Raises the last error.
+    `on_error` sees every failed try, including the ones a retry later hides (for metrics)."""
     last: ProviderError | None = None
     for attempt in range(policy.attempts):
         if attempt:
@@ -130,6 +132,8 @@ async def call_with_retries(
         else:
             breaker.record_success()
             return result
+        if on_error is not None:
+            on_error(last)
         # a non-retryable error (a bad request, a bad key) says nothing about the provider's health
         if not last.retryable:
             raise last
