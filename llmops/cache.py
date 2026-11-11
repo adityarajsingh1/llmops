@@ -17,10 +17,24 @@ import time
 from abc import ABC, abstractmethod
 from collections import OrderedDict
 from collections.abc import Callable
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from llmops.embeddings import Embedder, cosine
 from llmops.providers import CompletionRequest, CompletionResponse
+
+
+class SemanticConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    # cosine similarity needed to reuse an answer; lower means more hits and more wrong answers
+    threshold: float = Field(default=0.9, gt=0, le=1)
+    embedder: str = "hashing"
+    options: dict[str, Any] = Field(default_factory=dict)
+    # entries searched per (team, model, conversation) bucket; the search is a linear scan
+    max_entries_per_bucket: int = Field(default=500, gt=0)
 
 
 class CacheConfig(BaseModel):
@@ -32,6 +46,8 @@ class CacheConfig(BaseModel):
     # cache requests with a temperature above 0 (or none given) too
     cache_nondeterministic: bool = False
     shared_across_teams: bool = False
+    # also reuse answers to questions that are close but not identical; see SemanticCache
+    semantic: SemanticConfig = Field(default_factory=SemanticConfig)
 
 
 class CachedAnswer(BaseModel):
@@ -96,3 +112,57 @@ def cache_key(scope: str, alias: str, request: CompletionRequest) -> str:
         "temperature": request.temperature,
     }
     return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
+
+
+def semantic_bucket(scope: str, alias: str, request: CompletionRequest) -> str:
+    """Everything except the last user message must match exactly for a semantic hit: the same
+    system prompt, the same earlier turns and the same settings."""
+    *context, last = request.messages
+    data = {
+        "scope": scope,
+        "model": alias,
+        "upstream": request.model,
+        "context": [m.model_dump() for m in context],
+        "last_role": last.role,
+        "max_tokens": request.max_tokens,
+        "temperature": request.temperature,
+    }
+    return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
+
+
+class SemanticCache:
+    """Reuses the answer to the most similar earlier question in the same bucket, if it's at
+    least `threshold` similar. In memory, with a linear scan per bucket, which is fine for the
+    few hundred entries a bucket holds; a vector database would be the way to scale it."""
+
+    def __init__(
+        self,
+        embedder: Embedder,
+        config: SemanticConfig,
+        ttl_seconds: float,
+        clock: Callable[[], float] = time.monotonic,
+    ):
+        self.embedder = embedder
+        self.config = config
+        self.ttl = ttl_seconds
+        self.clock = clock
+        self._buckets: dict[str, list[tuple[float, list[float], CachedAnswer]]] = {}
+
+    async def get(self, bucket: str, text: str) -> tuple[CachedAnswer, float] | None:
+        entries = self._buckets.get(bucket)
+        if not entries:
+            return None
+        now = self.clock()
+        entries[:] = [e for e in entries if now - e[0] <= self.ttl]
+        vector = await self.embedder.embed(text)
+        best: tuple[CachedAnswer, float] | None = None
+        for _, other, answer in entries:
+            similarity = cosine(vector, other)
+            if similarity >= self.config.threshold and (best is None or similarity > best[1]):
+                best = (answer, similarity)
+        return best
+
+    async def put(self, bucket: str, text: str, answer: CachedAnswer) -> None:
+        entries = self._buckets.setdefault(bucket, [])
+        entries.append((self.clock(), await self.embedder.embed(text), answer))
+        del entries[: -self.config.max_entries_per_bucket]

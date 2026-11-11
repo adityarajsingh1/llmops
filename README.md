@@ -32,7 +32,7 @@ The plan for llmops:
 - token and cost accounting per team and model, with a usage endpoint and a `llmops usage` report
 - monthly budgets per team that block requests or just warn once they're used up
 - Prometheus metrics at `/metrics`
-- a response cache for repeated requests
+- a response cache for repeated requests, exact and semantic
 - offline evals for prompts, with a GitHub Action that fails a pull request when a prompt change makes the scores drop
 
 ```bash
@@ -112,6 +112,14 @@ Plenty of LLM traffic repeats itself: the same FAQ question, the same ticket cla
 
 Only requests with `temperature: 0` are cached unless `cache_nondeterministic` is on, because a caller who asked for a higher temperature wants different answers. Entries are kept per team unless `shared_across_teams` is on, so a team never gets an answer generated from another team's prompt. A model can opt out with `cache: false` on its entry. The cache lives in the gateway process; a Redis backend (implement `CacheBackend` in `cache.py`) would let several gateways share one.
 
+The **semantic cache** (`cache.semantic.enabled`) also reuses an answer when a new question is close to an earlier one, and marks the response `x-llmops-cache: semantic-hit`. Everything except the last user message has to match exactly (same system prompt, same earlier turns, same settings). Only the last message is compared, by cosine similarity of embeddings, against `threshold` (0.9 by default). The embedder is pluggable:
+
+- `hashing` (the default) is built in and needs no network. It hashes words and character trigrams, so it matches rewordings that use the same words ("How do I reset my password?" and "Reset my password, how do I do it?" score 0.93). It doesn't understand meaning, so paraphrases with different words won't match, and it keeps "...on mobile?" (0.86) apart from the original at the default threshold.
+- `openai` uses an embedding model and matches real paraphrases.
+- Others plug in through the `llmops.embedders` entry point group.
+
+A wrong semantic hit means a wrong answer, so start with a high threshold and watch `llmops_cache_lookups_total{result="semantic_hit"}` before lowering it. If the embedder fails, the gateway logs it and carries on without the semantic cache.
+
 ### Metrics
 
 `/metrics` serves Prometheus metrics. It isn't behind a team key, so keep it on an internal network (or turn it off with `LLMOPS_METRICS_ENABLED=false`).
@@ -126,6 +134,7 @@ Only requests with `temperature: 0` are cached unless `cache_nondeterministic` i
 | `llmops_provider_errors_total` | provider, retryable | failed tries, including ones a retry later hid |
 | `llmops_fallbacks_total` | model, fallback | requests that went to a fallback model |
 | `llmops_circuit_state` | provider | 0 closed, 1 half-open, 2 open |
+| `llmops_cache_lookups_total` | model, result | cache lookups: hit, semantic_hit or miss |
 
 Labels only ever contain teams and models from `gateway.yaml`. A request for a model that doesn't exist is counted as `model="unknown"`, so nobody can blow up the number of series by sending random names.
 

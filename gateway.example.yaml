@@ -58,3 +58,8 @@ cache:
   max_entries: 10000
   cache_nondeterministic: false   # by default only requests with temperature 0 are cached
   shared_across_teams: false      # entries are per team unless this is on
+  semantic:
+    enabled: false
+    threshold: 0.9                # cosine similarity needed to reuse an answer
+    embedder: hashing             # built in, no network; or `openai` (text-embedding-3-small)
+    # options: {model: text-embedding-3-small}

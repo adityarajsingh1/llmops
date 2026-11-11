@@ -24,8 +24,17 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from llmops import budgets
 from llmops.auth import bearer_token, find_owner
-from llmops.cache import CacheBackend, CachedAnswer, MemoryCache, cache_key, is_cacheable
+from llmops.cache import (
+    CacheBackend,
+    CachedAnswer,
+    MemoryCache,
+    SemanticCache,
+    cache_key,
+    is_cacheable,
+    semantic_bucket,
+)
 from llmops.config import ConfigError, GatewayConfig, Team
+from llmops.embeddings import Embedder, create_embedder
 from llmops.metrics import Metrics
 from llmops.observability import request_id_var
 from llmops.prompts import PromptError, PromptRegistry
@@ -181,6 +190,7 @@ class Gateway:
         sleep: Sleep = asyncio.sleep,
         usage: UsageStore | None = None,
         cache: CacheBackend | None = None,
+        embedder: Embedder | None = None,
     ):
         self.config = config
         self.prompts = prompts or PromptRegistry([])
@@ -191,6 +201,11 @@ class Gateway:
         self.usage = usage or MemoryUsageStore()
         self.metrics = Metrics()
         self.cache = cache or MemoryCache(config.cache.max_entries, config.cache.ttl_seconds)
+        self.semantic: SemanticCache | None = None
+        sem = config.cache.semantic
+        if config.cache.enabled and sem.enabled:
+            embedder = embedder or create_embedder(sem.embedder, **sem.options)
+            self.semantic = SemanticCache(embedder, sem, config.cache.ttl_seconds)
         for name, breaker in self.breakers.items():
             self.metrics.watch_breaker(name, breaker)
         unpriced = sorted(alias for alias, route in config.models.items() if route.price is None)
@@ -301,19 +316,39 @@ class Gateway:
 
     async def complete_cached(
         self, team: Team, alias: str, request: CompletionRequest
-    ) -> tuple[str, CompletionResponse, Literal["hit", "miss"] | None]:
-        """complete(), answered from the cache when possible. The last value is "hit", "miss",
-        or None when the request isn't cacheable."""
+    ) -> tuple[str, CompletionResponse, Literal["hit", "semantic-hit", "miss"] | None]:
+        """complete(), answered from the cache when possible. The last value says how, or is
+        None when the request isn't cacheable."""
         if not (self.config.models[alias].cache and is_cacheable(self.config.cache, request)):
             return (*await self.complete(alias, request), None)
         scope = "*" if self.config.cache.shared_across_teams else team.name
         key = cache_key(scope, alias, request)
         hit = self.cache.get(key)
-        self.metrics.cache.labels(model=alias, result="hit" if hit else "miss").inc()
         if hit is not None:
+            self.metrics.cache.labels(model=alias, result="hit").inc()
             return hit.model, hit.response, "hit"
+
+        bucket, question = semantic_bucket(scope, alias, request), request.messages[-1].content
+        if self.semantic is not None:
+            try:
+                near = await self.semantic.get(bucket, question)
+            except Exception:
+                # the embedder being down shouldn't take requests down with it
+                log.exception("semantic cache lookup failed")
+                near = None
+            if near is not None:
+                self.metrics.cache.labels(model=alias, result="semantic_hit").inc()
+                return near[0].model, near[0].response, "semantic-hit"
+
+        self.metrics.cache.labels(model=alias, result="miss").inc()
         answered_by, resp = await self.complete(alias, request)
-        self.cache.put(key, CachedAnswer(model=answered_by, response=resp))
+        answer = CachedAnswer(model=answered_by, response=resp)
+        self.cache.put(key, answer)
+        if self.semantic is not None:
+            try:
+                await self.semantic.put(bucket, question, answer)
+            except Exception:
+                log.exception("semantic cache store failed")
         return answered_by, resp, "miss"
 
     def _count_error(self, provider: str, error: ProviderError) -> None:
@@ -357,6 +392,8 @@ class Gateway:
     async def aclose(self) -> None:
         for p in self._providers.values():
             await p.aclose()
+        if self.semantic is not None:
+            await self.semantic.embedder.aclose()
         self.usage.close()
 
 
@@ -404,7 +441,7 @@ async def _chat_completion(
     alias, resp, cache = await gateway.complete_cached(team, alias, upstream)
     if cache is not None:
         response.headers["x-llmops-cache"] = cache
-    if cache == "hit":
+    if cache in ("hit", "semantic-hit"):
         # nothing was spent, so nothing goes into usage or budgets
         response.headers["x-llmops-cost-usd"] = "0.000000"
     else:
