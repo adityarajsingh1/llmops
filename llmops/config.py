@@ -13,6 +13,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from llmops.budgets import Budget
+from llmops.cache import CacheConfig
 from llmops.providers import Provider, create
 from llmops.reliability import ReliabilityConfig
 from llmops.usage import Price
@@ -51,6 +52,8 @@ class ModelRoute(BaseModel):
     fallbacks: list[str] = Field(default_factory=list)
     # USD per million tokens; without a price the model's calls are recorded with a cost of 0
     price: Price | None = None
+    # set to false for models whose answers must always be fresh, even when caching is on
+    cache: bool = True
 
 
 class Team(BaseModel):
@@ -74,6 +77,7 @@ class GatewayConfig(BaseModel):
     models: dict[str, ModelRoute] = Field(default_factory=dict)
     teams: list[Team] = Field(default_factory=list)
     reliability: ReliabilityConfig = Field(default_factory=ReliabilityConfig)
+    cache: CacheConfig = Field(default_factory=CacheConfig)
 
     @model_validator(mode="after")
     def _check_references(self) -> GatewayConfig:

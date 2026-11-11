@@ -24,6 +24,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from llmops import budgets
 from llmops.auth import bearer_token, find_owner
+from llmops.cache import CacheBackend, CachedAnswer, MemoryCache, cache_key, is_cacheable
 from llmops.config import ConfigError, GatewayConfig, Team
 from llmops.metrics import Metrics
 from llmops.observability import request_id_var
@@ -179,6 +180,7 @@ class Gateway:
         providers: dict[str, Provider] | None = None,
         sleep: Sleep = asyncio.sleep,
         usage: UsageStore | None = None,
+        cache: CacheBackend | None = None,
     ):
         self.config = config
         self.prompts = prompts or PromptRegistry([])
@@ -188,6 +190,7 @@ class Gateway:
         self._sleep = sleep
         self.usage = usage or MemoryUsageStore()
         self.metrics = Metrics()
+        self.cache = cache or MemoryCache(config.cache.max_entries, config.cache.ttl_seconds)
         for name, breaker in self.breakers.items():
             self.metrics.watch_breaker(name, breaker)
         unpriced = sorted(alias for alias, route in config.models.items() if route.price is None)
@@ -296,6 +299,23 @@ class Gateway:
             raise GatewayError(503, str(last), "provider_unavailable", "api_error")
         raise GatewayError(502, str(last), "provider_error", "api_error")
 
+    async def complete_cached(
+        self, team: Team, alias: str, request: CompletionRequest
+    ) -> tuple[str, CompletionResponse, Literal["hit", "miss"] | None]:
+        """complete(), answered from the cache when possible. The last value is "hit", "miss",
+        or None when the request isn't cacheable."""
+        if not (self.config.models[alias].cache and is_cacheable(self.config.cache, request)):
+            return (*await self.complete(alias, request), None)
+        scope = "*" if self.config.cache.shared_across_teams else team.name
+        key = cache_key(scope, alias, request)
+        hit = self.cache.get(key)
+        self.metrics.cache.labels(model=alias, result="hit" if hit else "miss").inc()
+        if hit is not None:
+            return hit.model, hit.response, "hit"
+        answered_by, resp = await self.complete(alias, request)
+        self.cache.put(key, CachedAnswer(model=answered_by, response=resp))
+        return answered_by, resp, "miss"
+
     def _count_error(self, provider: str, error: ProviderError) -> None:
         self.metrics.provider_errors.labels(provider=provider, retryable=str(error.retryable).lower()).inc()
 
@@ -381,9 +401,15 @@ async def _chat_completion(
     request.state.model = alias
     budget = gateway.check_budget(team)
     # `model` in the response is the one that answered, which differs from the request after a fallback
-    alias, resp = await gateway.complete(alias, upstream)
-    rec = gateway.record_usage(team, alias, resp)
-    response.headers["x-llmops-cost-usd"] = f"{rec.cost_usd:.6f}"
+    alias, resp, cache = await gateway.complete_cached(team, alias, upstream)
+    if cache is not None:
+        response.headers["x-llmops-cache"] = cache
+    if cache == "hit":
+        # nothing was spent, so nothing goes into usage or budgets
+        response.headers["x-llmops-cost-usd"] = "0.000000"
+    else:
+        rec = gateway.record_usage(team, alias, resp)
+        response.headers["x-llmops-cost-usd"] = f"{rec.cost_usd:.6f}"
     if budget is not None:
         # as of before this request; the next one will see this request's cost too
         response.headers["x-llmops-budget-remaining-usd"] = f"{budget.remaining_usd:.4f}"

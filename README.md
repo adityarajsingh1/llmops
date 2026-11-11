@@ -32,6 +32,7 @@ The plan for llmops:
 - token and cost accounting per team and model, with a usage endpoint and a `llmops usage` report
 - monthly budgets per team that block requests or just warn once they're used up
 - Prometheus metrics at `/metrics`
+- a response cache for repeated requests
 - offline evals for prompts, with a GitHub Action that fails a pull request when a prompt change makes the scores drop
 
 ```bash
@@ -104,6 +105,12 @@ team             model                     requests   tokens in  tokens out    c
 ---------------------------------------------------------------------------------------
 demo             echo                             2           2           6      0.0000
 ```
+
+### Caching
+
+Plenty of LLM traffic repeats itself: the same FAQ question, the same ticket classified again after the app retried. With `cache: {enabled: true}` in `gateway.yaml`, an identical request is answered from memory, at no cost, with `x-llmops-cache: hit` on the response. Cache hits aren't recorded as usage and don't count against budgets.
+
+Only requests with `temperature: 0` are cached unless `cache_nondeterministic` is on, because a caller who asked for a higher temperature wants different answers. Entries are kept per team unless `shared_across_teams` is on, so a team never gets an answer generated from another team's prompt. A model can opt out with `cache: false` on its entry. The cache lives in the gateway process; a Redis backend (implement `CacheBackend` in `cache.py`) would let several gateways share one.
 
 ### Metrics
 

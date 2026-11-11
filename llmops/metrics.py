@@ -69,6 +69,13 @@ class Metrics:
             registry=self.registry,
         )
 
+        self.cache = Counter(
+            "llmops_cache_lookups",
+            "Response cache lookups by result",
+            ["model", "result"],
+            registry=self.registry,
+        )
+
     def watch_breaker(self, provider: str, breaker: CircuitBreaker) -> None:
         """Read the breaker's state at scrape time, so the gauge is never stale."""
         codes = {"closed": 0, "half-open": 1, "open": 2}

@@ -50,3 +50,11 @@ reliability:
   breaker:
     failure_threshold: 5   # failures in a row before a provider is skipped
     reset_seconds: 30      # then one trial request is let through
+
+# Optional response cache, off by default.
+cache:
+  enabled: false
+  ttl_seconds: 3600
+  max_entries: 10000
+  cache_nondeterministic: false   # by default only requests with temperature 0 are cached
+  shared_across_teams: false      # entries are per team unless this is on
