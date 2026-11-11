@@ -41,7 +41,7 @@ pip install -e ".[dev]"
 llmops serve            # http://127.0.0.1:8000/health, API docs at /docs
 ```
 
-Or with Docker, together with Prometheus:
+Or with Docker, together with Prometheus and Grafana:
 
 ```bash
 docker compose up --build
@@ -49,7 +49,11 @@ curl localhost:8000/v1/chat/completions -H "Authorization: Bearer llmops-demo-ke
   -H "Content-Type: application/json" -d '{"model": "echo", "messages": [{"role": "user", "content": "hi"}]}'
 ```
 
-The compose file starts with `gateway.example.yaml`, which has a demo team and the fake `echo` model, so it runs without any API keys. Point the volume at your own `gateway.yaml` and set `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` to use real models. The image runs as a non-root user, keeps the usage database in the `/data` volume, and has a health check on `/health`. Prometheus is at http://localhost:9090, already scraping the gateway.
+The compose file starts with `gateway.example.yaml`, which has a demo team and the fake `echo` model, so it runs without any API keys. Point the volume at your own `gateway.yaml` and set `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` to use real models. The image runs as a non-root user, keeps the usage database in the `/data` volume, and has a health check on `/health`. Prometheus is at http://localhost:9090, already scraping the gateway, and Grafana at http://localhost:3000 (admin / admin, change it with `GRAFANA_ADMIN_PASSWORD`) opens on the llmops dashboard. The dashboard shows request rate, error rate, latency per model, tokens and cost per team, the cache hit ratio, provider errors, fallbacks and the circuit breakers, with filters for team and model:
+
+![The llmops Grafana dashboard after a few demo requests to the fake echo model](docs/grafana-dashboard.png)
+
+The dashboard is a plain JSON file in `deploy/grafana/dashboards/`, so it can be imported into an existing Grafana too.
 
 ### The gateway endpoint
 
