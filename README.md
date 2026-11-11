@@ -41,6 +41,16 @@ pip install -e ".[dev]"
 llmops serve            # http://127.0.0.1:8000/health, API docs at /docs
 ```
 
+Or with Docker, together with Prometheus:
+
+```bash
+docker compose up --build
+curl localhost:8000/v1/chat/completions -H "Authorization: Bearer llmops-demo-key-do-not-use-in-prod" \
+  -H "Content-Type: application/json" -d '{"model": "echo", "messages": [{"role": "user", "content": "hi"}]}'
+```
+
+The compose file starts with `gateway.example.yaml`, which has a demo team and the fake `echo` model, so it runs without any API keys. Point the volume at your own `gateway.yaml` and set `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` to use real models. The image runs as a non-root user, keeps the usage database in the `/data` volume, and has a health check on `/health`. Prometheus is at http://localhost:9090, already scraping the gateway.
+
 ### The gateway endpoint
 
 Any app that already talks to OpenAI can point at llmops instead. Copy `gateway.example.yaml` to `gateway.yaml`, then:

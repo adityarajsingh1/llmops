@@ -28,3 +28,18 @@ jobs:
         run: mypy llmops
       - name: Tests
         run: pytest -q
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the image
+        run: docker build -t llmops:ci .
+      - name: Smoke test
+        run: |
+          docker run -d --name gw -p 8000:8000 -v "$PWD/gateway.example.yaml:/app/gateway.yaml:ro" llmops:ci
+          for i in $(seq 1 30); do curl -sf localhost:8000/health && break; sleep 1; done
+          curl -sf localhost:8000/v1/chat/completions \
+            -H "Authorization: Bearer llmops-demo-key-do-not-use-in-prod" -H "Content-Type: application/json" \
+            -d '{"model": "echo", "messages": [{"role": "user", "content": "hi"}]}'
+          curl -sf localhost:8000/metrics | grep -q llmops_requests_total

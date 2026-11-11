@@ -1,0 +1,34 @@
+# The gateway with Prometheus and Grafana next to it:
+#
+#   docker compose up --build
+#
+# gateway     http://localhost:8000   (API docs at /docs)
+# prometheus  http://localhost:9090
+# grafana     http://localhost:3000   (admin / admin, the llmops dashboard is preloaded)
+#
+# It starts with gateway.example.yaml (a demo team and the fake `echo` model, no API keys
+# needed). Point the volume at your own gateway.yaml and set the provider keys to use real models.
+
+services:
+  gateway:
+    build: .
+    ports: ["8000:8000"]
+    volumes:
+      - ./gateway.example.yaml:/app/gateway.yaml:ro
+      - usage:/data
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      LLMOPS_ENVIRONMENT: ${LLMOPS_ENVIRONMENT:-dev}
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    ports: ["9090:9090"]
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    depends_on: [gateway]
+    restart: unless-stopped
+
+volumes:
+  usage:
