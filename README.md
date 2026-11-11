@@ -33,6 +33,7 @@ The plan for llmops:
 - monthly budgets per team that block requests or just warn once they're used up
 - Prometheus metrics at `/metrics`
 - a response cache for repeated requests, exact and semantic
+- per-team rate limits
 - offline evals for prompts, with a GitHub Action that fails a pull request when a prompt change makes the scores drop
 
 ```bash
@@ -119,6 +120,10 @@ The **semantic cache** (`cache.semantic.enabled`) also reuses an answer when a n
 - Others plug in through the `llmops.embedders` entry point group.
 
 A wrong semantic hit means a wrong answer, so start with a high threshold and watch `llmops_cache_lookups_total{result="semantic_hit"}` before lowering it. If the embedder fails, the gateway logs it and carries on without the semantic cache.
+
+### Rate limits
+
+A team can get `rate_limit: {requests_per_minute: 120, burst: 20}`. It's a token bucket, so up to `burst` requests can go through back to back and the allowance refills evenly over the minute; one runaway loop in an app gets slowed down without punishing normal bursty traffic. Over the limit, requests get a 429 `rate_limit_exceeded` with a `Retry-After` header, and every response carries `x-ratelimit-limit-requests` and `x-ratelimit-remaining-requests` like OpenAI's API, so SDKs that back off on 429s just work. Limits are kept per gateway process. A tokens-per-minute limit would be a good addition.
 
 ### Metrics
 

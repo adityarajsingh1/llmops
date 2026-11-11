@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 from llmops.budgets import Budget
 from llmops.cache import CacheConfig
 from llmops.providers import Provider, create
+from llmops.ratelimit import RateLimit
 from llmops.reliability import ReliabilityConfig
 from llmops.usage import Price
 
@@ -65,6 +66,7 @@ class Team(BaseModel):
     models: list[str] = Field(default_factory=list)
     # no budget means no limit (usage is still recorded)
     budget: Budget | None = None
+    rate_limit: RateLimit | None = None
 
     def may_use(self, model: str) -> bool:
         return not self.models or model in self.models

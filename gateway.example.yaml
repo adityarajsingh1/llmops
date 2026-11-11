@@ -39,6 +39,9 @@ teams:
   #     monthly_usd: 200
   #     on_exceed: block   # or warn: let requests through, with a warning header
   #     warn_at: 0.8       # responses carry a warning header from 80% of the budget
+  #   rate_limit:
+  #     requests_per_minute: 120
+  #     burst: 20          # back-to-back requests allowed; default a tenth of the minute
 
 # Optional; these are the defaults.
 reliability:

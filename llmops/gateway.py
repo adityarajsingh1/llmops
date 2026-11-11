@@ -39,6 +39,7 @@ from llmops.metrics import Metrics
 from llmops.observability import request_id_var
 from llmops.prompts import PromptError, PromptRegistry
 from llmops.providers import ChatMessage, CompletionRequest, CompletionResponse, Provider, ProviderError
+from llmops.ratelimit import TokenBucket
 from llmops.reliability import CircuitBreaker, Sleep, call_with_retries
 from llmops.usage import MemoryUsageStore, UsageRecord, UsageStore
 
@@ -47,12 +48,20 @@ tracer = trace.get_tracer("llmops")
 
 
 class GatewayError(Exception):
-    def __init__(self, status: int, message: str, code: str, type: str = "invalid_request_error"):
+    def __init__(
+        self,
+        status: int,
+        message: str,
+        code: str,
+        type: str = "invalid_request_error",
+        headers: dict[str, str] | None = None,
+    ):
         super().__init__(message)
         self.status = status
         self.message = message
         self.code = code
         self.type = type
+        self.headers = headers or {}
 
 
 def error_response(status: int, message: str, code: str, type: str = "invalid_request_error") -> JSONResponse:
@@ -63,7 +72,9 @@ def error_response(status: int, message: str, code: str, type: str = "invalid_re
 
 async def gateway_error_handler(request: Request, exc: Exception) -> JSONResponse:
     assert isinstance(exc, GatewayError)
-    return error_response(exc.status, exc.message, exc.code, exc.type)
+    response = error_response(exc.status, exc.message, exc.code, exc.type)
+    response.headers.update(exc.headers)
+    return response
 
 
 async def validation_error_handler(request: Request, exc: Exception) -> JSONResponse:
@@ -200,6 +211,7 @@ class Gateway:
         self._sleep = sleep
         self.usage = usage or MemoryUsageStore()
         self.metrics = Metrics()
+        self._buckets = {t.name: TokenBucket(t.rate_limit) for t in config.teams if t.rate_limit}
         self.cache = cache or MemoryCache(config.cache.max_entries, config.cache.ttl_seconds)
         self.semantic: SemanticCache | None = None
         sem = config.cache.semantic
@@ -354,6 +366,29 @@ class Gateway:
     def _count_error(self, provider: str, error: ProviderError) -> None:
         self.metrics.provider_errors.labels(provider=provider, retryable=str(error.retryable).lower()).inc()
 
+    def check_rate_limit(self, team: Team) -> dict[str, str]:
+        """Takes one request from the team's bucket. Returns OpenAI-style rate limit headers,
+        or raises a 429 with Retry-After when the bucket is empty."""
+        bucket = self._buckets.get(team.name)
+        if bucket is None:
+            return {}
+        allowed = bucket.take()
+        headers = {
+            "x-ratelimit-limit-requests": str(bucket.limit.requests_per_minute),
+            "x-ratelimit-remaining-requests": str(bucket.remaining),
+        }
+        if not allowed:
+            wait = bucket.retry_after()
+            raise GatewayError(
+                429,
+                f"team '{team.name}' is over its limit of {bucket.limit.requests_per_minute} requests per "
+                f"minute; retry in {wait}s",
+                "rate_limit_exceeded",
+                "requests",
+                headers={**headers, "retry-after": str(wait)},
+            )
+        return headers
+
     def check_budget(self, team: Team, now: datetime | None = None) -> budgets.BudgetStatus | None:
         """The team's budget status, or a 429 if the budget is used up and set to block."""
         if team.budget is None:
@@ -432,6 +467,7 @@ async def _chat_completion(
 ) -> ChatCompletion:
     team = gateway.authenticate(request.headers.get("authorization"))
     request.state.team = team.name
+    response.headers.update(gateway.check_rate_limit(team))
     if body.stream:
         raise GatewayError(400, "streaming isn't supported yet; send stream: false", "unsupported")
     alias, upstream = gateway.build_request(body, team)
