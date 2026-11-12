@@ -30,7 +30,7 @@ classifiers = [
 [project.optional-dependencies]
 # exporting traces over OTLP; without it spans are created but go nowhere
 otel = ["opentelemetry-sdk>=1.24", "opentelemetry-exporter-otlp-proto-http>=1.24"]
-dev = ["pytest>=8", "ruff>=0.15", "mypy>=1.10", "types-PyYAML", "opentelemetry-sdk>=1.24"]
+dev = ["pytest>=8", "ruff>=0.15", "mypy>=1.10", "types-PyYAML", "opentelemetry-sdk>=1.24", "pre-commit>=3.5"]
 
 [project.scripts]
 llmops = "llmops.cli:main"

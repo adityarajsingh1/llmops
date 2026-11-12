@@ -109,7 +109,9 @@ To use real models, add them to `gateway.yaml`, set `OPENAI_API_KEY` / `ANTHROPI
 
 All of the above works and is tested (with fake providers, so the test suite needs no API keys), and the Docker setup is smoke-tested in CI. It hasn't run in anyone's production yet, so expect rough edges. The main known limits are that the cache, rate limits and circuit breakers live in one gateway process, usage is in SQLite, and streaming responses aren't supported yet. Contributions in any of those directions are very welcome.
 
-## Development
+## Contributing
+
+Contributions are very welcome, and the plugin design means a lot of them are a single file: a provider, an eval check, an embedder or a storage backend. [CONTRIBUTING.md](CONTRIBUTING.md) explains the setup (no API keys needed) and how to add each kind of plugin, and [docs/good-first-issues.md](docs/good-first-issues.md) lists well-scoped ideas to start with.
 
 ```bash
 pip install -e ".[dev]"
@@ -118,7 +120,7 @@ ruff check . && ruff format --check .
 mypy llmops
 ```
 
-CI runs these on Python 3.10 to 3.12, builds and smoke-tests the Docker image, and unit-tests the alert rules.
+CI runs these on Python 3.10 to 3.12, builds and smoke-tests the Docker image, and unit-tests the alert rules. Please report security problems privately, see [SECURITY.md](SECURITY.md).
 
 ## License
 
