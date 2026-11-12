@@ -1,0 +1,62 @@
+rule_files:
+  - alerts.yml
+
+evaluation_interval: 1m
+
+tests:
+  - interval: 1m
+    input_series:
+      # 10 requests a minute, 2 of them 503s: a 20% error rate
+      - series: 'llmops_requests_total{team="search", model="echo", status="200"}'
+        values: '0+8x30'
+      - series: 'llmops_requests_total{team="search", model="echo", status="503"}'
+        values: '0+2x30'
+      - series: 'llmops_circuit_state{provider="openai"}'
+        values: '0 0 2x28'
+      - series: 'up{job="llmops", instance="gateway:8000"}'
+        values: '1 1 1 0x27'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: LLMOpsHighErrorRate
+        exp_alerts:
+          - exp_labels: {severity: critical}
+            exp_annotations:
+              summary: "20% of LLM requests are failing"
+              runbook: "docs/runbook.md#high-error-rate"
+      - eval_time: 20m
+        alertname: LLMOpsCircuitOpen
+        exp_alerts:
+          - exp_labels: {severity: warning, provider: openai}
+            exp_annotations:
+              summary: "circuit breaker for openai has been open for 5 minutes"
+              runbook: "docs/runbook.md#circuit-open"
+      - eval_time: 20m
+        alertname: LLMOpsGatewayDown
+        exp_alerts:
+          - exp_labels: {severity: critical, job: llmops, instance: "gateway:8000"}
+            exp_annotations:
+              summary: "llmops gateway gateway:8000 is down"
+              runbook: "docs/runbook.md#gateway-down"
+      # 5 minutes in, the error rate alert is still pending
+      - eval_time: 5m
+        alertname: LLMOpsHighErrorRate
+        exp_alerts: []
+
+  - interval: 1m
+    input_series:
+      # a monitor failing 1 in 4 sampled answers, 20 samples an hour
+      - series: 'llmops_monitor_checks_total{monitor="support-no-made-up-prices", result="pass"}'
+        values: '0+0.25x150'
+      - series: 'llmops_monitor_checks_total{monitor="support-no-made-up-prices", result="fail"}'
+        values: '0+0.083333x150'
+      # and a quiet one: too few samples to judge
+      - series: 'llmops_monitor_checks_total{monitor="rarely-used", result="fail"}'
+        values: '0+0.05x150'
+    alert_rule_test:
+      - eval_time: 150m
+        alertname: LLMOpsMonitorFailing
+        exp_alerts:
+          - exp_labels: {severity: warning, monitor: support-no-made-up-prices}
+            exp_annotations:
+              summary: "monitor support-no-made-up-prices fails on 25% of sampled answers"
+              runbook: "docs/runbook.md#monitor-failing"

@@ -43,3 +43,14 @@ jobs:
             -H "Authorization: Bearer llmops-demo-key-do-not-use-in-prod" -H "Content-Type: application/json" \
             -d '{"model": "echo", "messages": [{"role": "user", "content": "hi"}]}'
           curl -sf localhost:8000/metrics | grep -q llmops_requests_total
+
+  alerts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check and unit-test the alert rules
+        run: |
+          docker run --rm --entrypoint promtool -v "$PWD/deploy/prometheus:/rules" -w /rules \
+            prom/prometheus:v3.5.0 check rules alerts.yml
+          docker run --rm --entrypoint promtool -v "$PWD/deploy/prometheus:/rules" -w /rules \
+            prom/prometheus:v3.5.0 test rules alerts.test.yml

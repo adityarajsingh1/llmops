@@ -34,7 +34,7 @@ The plan for llmops:
 - Prometheus metrics at `/metrics`
 - a response cache for repeated requests, exact and semantic
 - per-team rate limits
-- quality monitors on a sample of live answers
+- quality monitors on a sample of live answers, a weekly drift report and Prometheus alert rules
 - offline evals for prompts, with a GitHub Action that fails a pull request when a prompt change makes the scores drop
 
 ```bash
@@ -246,6 +246,18 @@ monitoring:
 ```
 
 Results go to Prometheus right away as `llmops_monitor_checks_total{monitor, result}`, so a falling pass rate can alert. The samples are stored next to the usage records. Samples contain model output, so think about what your users send before you turn this on.
+
+**The weekly report** compares the last 7 days with the 7 before, from the usage database:
+
+```bash
+llmops report                    # markdown: spend per team, cost and answer length per model, monitor pass rates
+llmops report --fail-on-drift    # exit code 2 when something drifted, for a cron job that pings someone
+llmops report --json
+```
+
+It flags a model whose cost per request or answer length moved by more than 25%, a monitor whose pass rate fell by more than 5 points (once both weeks have at least 20 samples), and a rise in answers cut off at `max_tokens`. These thresholds are simple on purpose, a starting point and not statistics, and with a handful of requests the numbers will be noisy.
+
+**Alerts.** `deploy/prometheus/alerts.yml` has Prometheus rules for a gateway that's down, more than 5% of requests failing, a circuit breaker open for 5 minutes, p95 latency above 20s, more than 10% of a model's traffic going to fallbacks, teams getting 429s, and a monitor failing on more than 20% of sampled answers. The compose setup loads them, and CI unit-tests them with `promtool test rules`. Each alert links to a section of the runbook.
 
 ### Providers
 

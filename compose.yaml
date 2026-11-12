@@ -27,6 +27,7 @@ services:
     ports: ["9090:9090"]
     volumes:
       - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
     depends_on: [gateway]
     restart: unless-stopped
 

@@ -1,0 +1,76 @@
+# Alert rules for the gateway. Loaded by the Prometheus in compose.yaml; tested with
+#   promtool test rules deploy/prometheus/alerts.test.yml
+groups:
+  - name: llmops
+    rules:
+      - alert: LLMOpsGatewayDown
+        expr: up{job="llmops"} == 0
+        for: 2m
+        labels: {severity: critical}
+        annotations:
+          summary: "llmops gateway {{ $labels.instance }} is down"
+          runbook: "docs/runbook.md#gateway-down"
+
+      - alert: LLMOpsHighErrorRate
+        # share of requests failing on the provider side (502/503)
+        expr: |
+          sum(rate(llmops_requests_total{status=~"5.."}[5m]))
+            / sum(rate(llmops_requests_total[5m])) > 0.05
+        for: 10m
+        labels: {severity: critical}
+        annotations:
+          summary: "{{ $value | humanizePercentage }} of LLM requests are failing"
+          runbook: "docs/runbook.md#high-error-rate"
+
+      - alert: LLMOpsCircuitOpen
+        expr: llmops_circuit_state == 2
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "circuit breaker for {{ $labels.provider }} has been open for 5 minutes"
+          runbook: "docs/runbook.md#circuit-open"
+
+      - alert: LLMOpsSlowResponses
+        expr: |
+          histogram_quantile(0.95, sum by (model, le) (rate(llmops_request_duration_seconds_bucket[10m]))) > 20
+        for: 15m
+        labels: {severity: warning}
+        annotations:
+          summary: "p95 latency for {{ $labels.model }} is {{ $value | humanizeDuration }}"
+          runbook: "docs/runbook.md#slow-responses"
+
+      - alert: LLMOpsManyFallbacks
+        # more than 10% of a model's requests answered by a fallback
+        expr: |
+          sum by (model) (rate(llmops_fallbacks_total[15m]))
+            / sum by (model) (rate(llmops_requests_total[15m])) > 0.1
+        for: 15m
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $value | humanizePercentage }} of {{ $labels.model }} requests go to a fallback"
+          runbook: "docs/runbook.md#circuit-open"
+
+      - alert: LLMOpsRequestsRefused
+        # 429s: teams over budget or over their rate limit
+        expr: |
+          sum by (team) (rate(llmops_requests_total{status="429"}[15m]))
+            / sum by (team) (rate(llmops_requests_total[15m])) > 0.1
+        for: 15m
+        labels: {severity: info}
+        annotations:
+          summary: "{{ $value | humanizePercentage }} of team {{ $labels.team }}'s requests are refused"
+          runbook: "docs/runbook.md#requests-refused"
+
+      - alert: LLMOpsMonitorFailing
+        # a live quality monitor failing on more than 20% of sampled answers, with enough samples
+        expr: |
+          (
+            sum by (monitor) (increase(llmops_monitor_checks_total{result="fail"}[1h]))
+              / sum by (monitor) (increase(llmops_monitor_checks_total[1h]))
+          ) > 0.2
+          and sum by (monitor) (increase(llmops_monitor_checks_total[1h])) >= 10
+        for: 30m
+        labels: {severity: warning}
+        annotations:
+          summary: "monitor {{ $labels.monitor }} fails on {{ $value | humanizePercentage }} of sampled answers"
+          runbook: "docs/runbook.md#monitor-failing"

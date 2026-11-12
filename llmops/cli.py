@@ -67,6 +67,13 @@ def main(argv: list[str] | None = None) -> None:
     cmp.add_argument("new")
     cmp.add_argument("--max-drop", type=float, default=0.0, help="allowed score drop, e.g. 0.05")
 
+    report = sub.add_parser("report", help="this week against last week: spend, cost per request, drift")
+    report.add_argument("--db", help="usage database (default: LLMOPS_USAGE_DB or ./llmops-usage.db)")
+    report.add_argument("--json", action="store_true", help="print JSON instead of markdown")
+    report.add_argument(
+        "--fail-on-drift", action="store_true", help="exit code 2 when something drifted (for cron alerts)"
+    )
+
     sub.add_parser("version", help="print the version")
 
     args = parser.parse_args(argv)
@@ -79,6 +86,8 @@ def main(argv: list[str] | None = None) -> None:
         from llmops.evals.cli import eval_command
 
         sys.exit(eval_command(args))
+    if args.command == "report":
+        sys.exit(report_command(args))
     if args.command == "usage":
         sys.exit(usage_command(args))
     if args.command == "keys":
@@ -116,6 +125,25 @@ _BlockDumper.add_representer(str, _str_presenter)
 def _as_text(v: PromptVersion) -> str:
     data = v.model_dump(exclude_none=True, exclude={"version", "note"})
     return yaml.dump(data, Dumper=_BlockDumper, sort_keys=False, allow_unicode=True, width=100)
+
+
+def report_command(args: argparse.Namespace) -> int:
+    from pathlib import Path
+
+    from llmops.report import to_markdown, weekly_report
+    from llmops.usage import SQLiteUsageStore
+
+    db = args.db or get_settings().usage_db
+    if not Path(db).is_file():
+        print(f"error: no usage database at {db}", file=sys.stderr)
+        return 1
+    store = SQLiteUsageStore(db)
+    try:
+        report = weekly_report(store)
+    finally:
+        store.close()
+    print(report.model_dump_json(indent=2) if args.json else to_markdown(report), end="")
+    return 2 if args.fail_on_drift and report.drift else 0
 
 
 def usage_command(args: argparse.Namespace) -> int:
