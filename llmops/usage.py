@@ -10,6 +10,7 @@ Postgres one would be a welcome contribution: implement UsageStore).
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import threading
 from abc import ABC, abstractmethod
@@ -18,6 +19,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from llmops.monitoring import Sample
 from llmops.providers import Usage
 
 
@@ -65,6 +67,13 @@ class UsageStore(ABC):
     ) -> list[UsageRow]:
         """Totals per (team, model) for records with since <= ts < until, sorted by team then model."""
 
+    @abstractmethod
+    def record_sample(self, sample: Sample) -> None: ...
+
+    @abstractmethod
+    def samples(self, since: datetime, until: datetime | None = None) -> list[Sample]:
+        """Samples with since <= ts < until, oldest first."""
+
     def spend(self, team: str, since: datetime) -> float:
         return sum(row.cost_usd for row in self.summary(since, team=team))
 
@@ -77,9 +86,17 @@ class MemoryUsageStore(UsageStore):
 
     def __init__(self) -> None:
         self.records: list[UsageRecord] = []
+        self.sampled: list[Sample] = []
 
     def record(self, rec: UsageRecord) -> None:
         self.records.append(rec)
+
+    def record_sample(self, sample: Sample) -> None:
+        self.sampled.append(sample)
+
+    def samples(self, since: datetime, until: datetime | None = None) -> list[Sample]:
+        kept = [s for s in self.sampled if s.ts >= since and (until is None or s.ts < until)]
+        return sorted(kept, key=lambda s: s.ts)
 
     def summary(
         self, since: datetime, until: datetime | None = None, team: str | None = None
@@ -113,6 +130,18 @@ CREATE TABLE IF NOT EXISTS usage (
     request_id TEXT
 );
 CREATE INDEX IF NOT EXISTS usage_team_ts ON usage (team, ts);
+CREATE TABLE IF NOT EXISTS samples (
+    ts TEXT NOT NULL,
+    team TEXT NOT NULL,
+    model TEXT NOT NULL,
+    prompt TEXT,
+    prompt_version INTEGER,
+    output TEXT NOT NULL,
+    completion_tokens INTEGER NOT NULL,
+    finish_reason TEXT,
+    checks TEXT NOT NULL           -- JSON object, monitor name -> passed
+);
+CREATE INDEX IF NOT EXISTS samples_ts ON samples (ts);
 """
 
 
@@ -145,6 +174,46 @@ class SQLiteUsageStore(UsageStore):
                     rec.request_id,
                 ),
             )
+
+    def record_sample(self, sample: Sample) -> None:
+        with self._lock, self._conn:
+            self._conn.execute(
+                "INSERT INTO samples VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    _utc_text(sample.ts),
+                    sample.team,
+                    sample.model,
+                    sample.prompt,
+                    sample.prompt_version,
+                    sample.output,
+                    sample.completion_tokens,
+                    sample.finish_reason,
+                    json.dumps(sample.checks),
+                ),
+            )
+
+    def samples(self, since: datetime, until: datetime | None = None) -> list[Sample]:
+        query = "SELECT * FROM samples WHERE ts >= ?"
+        params = [_utc_text(since)]
+        if until is not None:
+            query += " AND ts < ?"
+            params.append(_utc_text(until))
+        with self._lock:
+            rows = self._conn.execute(query + " ORDER BY ts", params).fetchall()
+        return [
+            Sample(
+                ts=datetime.fromisoformat(ts),
+                team=team,
+                model=model,
+                prompt=prompt,
+                prompt_version=version,
+                output=output,
+                completion_tokens=tokens,
+                finish_reason=finish,
+                checks=json.loads(checks),
+            )
+            for ts, team, model, prompt, version, output, tokens, finish, checks in rows
+        ]
 
     def summary(
         self, since: datetime, until: datetime | None = None, team: str | None = None

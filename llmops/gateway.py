@@ -11,8 +11,10 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
+import random
 import time
 import uuid
+from collections.abc import Callable
 from datetime import datetime
 from typing import Any, Literal
 
@@ -36,6 +38,7 @@ from llmops.cache import (
 from llmops.config import ConfigError, GatewayConfig, Team
 from llmops.embeddings import Embedder, create_embedder
 from llmops.metrics import Metrics
+from llmops.monitoring import Sample, run_monitors
 from llmops.observability import request_id_var
 from llmops.prompts import PromptError, PromptRegistry
 from llmops.providers import ChatMessage, CompletionRequest, CompletionResponse, Provider, ProviderError
@@ -202,6 +205,7 @@ class Gateway:
         usage: UsageStore | None = None,
         cache: CacheBackend | None = None,
         embedder: Embedder | None = None,
+        sampler: Callable[[], float] = random.random,
     ):
         self.config = config
         self.prompts = prompts or PromptRegistry([])
@@ -211,6 +215,7 @@ class Gateway:
         self._sleep = sleep
         self.usage = usage or MemoryUsageStore()
         self.metrics = Metrics()
+        self._sampler = sampler
         self._buckets = {t.name: TokenBucket(t.rate_limit) for t in config.teams if t.rate_limit}
         self.cache = cache or MemoryCache(config.cache.max_entries, config.cache.ttl_seconds)
         self.semantic: SemanticCache | None = None
@@ -424,6 +429,28 @@ class Gateway:
         )
         return rec
 
+    def maybe_sample(
+        self, team: Team, alias: str, resp: CompletionResponse, prompt: PromptRef | None
+    ) -> Sample | None:
+        """Keep this answer for monitoring, with probability `monitoring.sample_rate`."""
+        cfg = self.config.monitoring
+        if cfg.sample_rate == 0 or self._sampler() >= cfg.sample_rate:
+            return None
+        sample = Sample(
+            team=team.name,
+            model=alias,
+            prompt=prompt.name if prompt else None,
+            prompt_version=self.prompts[prompt.name].get(prompt.version).version if prompt else None,
+            output=resp.text,
+            completion_tokens=resp.usage.completion_tokens,
+            finish_reason=resp.finish_reason,
+        )
+        sample.checks = run_monitors(cfg.monitors, sample)
+        for name, passed in sample.checks.items():
+            self.metrics.monitor_checks.labels(monitor=name, result="pass" if passed else "fail").inc()
+        self.usage.record_sample(sample)
+        return sample
+
     async def aclose(self) -> None:
         for p in self._providers.values():
             await p.aclose()
@@ -482,6 +509,7 @@ async def _chat_completion(
         response.headers["x-llmops-cost-usd"] = "0.000000"
     else:
         rec = gateway.record_usage(team, alias, resp)
+        gateway.maybe_sample(team, alias, resp, body.prompt)
         response.headers["x-llmops-cost-usd"] = f"{rec.cost_usd:.6f}"
     if budget is not None:
         # as of before this request; the next one will see this request's cost too

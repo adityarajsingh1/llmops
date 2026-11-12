@@ -66,3 +66,13 @@ cache:
     threshold: 0.9                # cosine similarity needed to reuse an answer
     embedder: hashing             # built in, no network; or `openai` (text-embedding-3-small)
     # options: {model: text-embedding-3-small}
+
+# Optional quality monitoring on live answers, off by default (sample_rate 0).
+# Samples contain model output, so check what your users send before turning it on.
+monitoring:
+  sample_rate: 0.0
+  monitors:
+    - name: support-no-made-up-prices
+      prompt: support-reply      # or model: <name>; with neither, every sampled answer
+      checks:
+        - {type: regex, pattern: '[$€£]\s?\d', must_match: false}

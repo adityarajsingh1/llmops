@@ -76,6 +76,13 @@ class Metrics:
             registry=self.registry,
         )
 
+        self.monitor_checks = Counter(
+            "llmops_monitor_checks",
+            "Monitor results on sampled live answers",
+            ["monitor", "result"],
+            registry=self.registry,
+        )
+
     def watch_breaker(self, provider: str, breaker: CircuitBreaker) -> None:
         """Read the breaker's state at scrape time, so the gauge is never stale."""
         codes = {"closed": 0, "half-open": 1, "open": 2}

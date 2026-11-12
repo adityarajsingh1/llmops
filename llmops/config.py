@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 
 from llmops.budgets import Budget
 from llmops.cache import CacheConfig
+from llmops.monitoring import MonitoringConfig
 from llmops.providers import Provider, create
 from llmops.ratelimit import RateLimit
 from llmops.reliability import ReliabilityConfig
@@ -80,6 +81,7 @@ class GatewayConfig(BaseModel):
     teams: list[Team] = Field(default_factory=list)
     reliability: ReliabilityConfig = Field(default_factory=ReliabilityConfig)
     cache: CacheConfig = Field(default_factory=CacheConfig)
+    monitoring: MonitoringConfig = Field(default_factory=MonitoringConfig)
 
     @model_validator(mode="after")
     def _check_references(self) -> GatewayConfig:
@@ -101,6 +103,9 @@ class GatewayConfig(BaseModel):
             unknown = [m for m in team.models if m not in self.models]
             if unknown:
                 raise ValueError(f"team '{team.name}' lists unknown model(s): {', '.join(unknown)}")
+        for monitor in self.monitoring.monitors:
+            if monitor.model is not None and monitor.model not in self.models:
+                raise ValueError(f"monitor '{monitor.name}' watches unknown model '{monitor.model}'")
         return self
 
     @classmethod

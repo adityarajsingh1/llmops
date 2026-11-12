@@ -34,6 +34,7 @@ The plan for llmops:
 - Prometheus metrics at `/metrics`
 - a response cache for repeated requests, exact and semantic
 - per-team rate limits
+- quality monitors on a sample of live answers
 - offline evals for prompts, with a GitHub Action that fails a pull request when a prompt change makes the scores drop
 
 ```bash
@@ -154,6 +155,7 @@ A team can get `rate_limit: {requests_per_minute: 120, burst: 20}`. It's a token
 | `llmops_fallbacks_total` | model, fallback | requests that went to a fallback model |
 | `llmops_circuit_state` | provider | 0 closed, 1 half-open, 2 open |
 | `llmops_cache_lookups_total` | model, result | cache lookups: hit, semantic_hit or miss |
+| `llmops_monitor_checks_total` | monitor, result | monitor results on sampled live answers |
 
 Labels only ever contain teams and models from `gateway.yaml`. A request for a model that doesn't exist is counted as `model="unknown"`, so nobody can blow up the number of series by sending random names.
 
@@ -228,6 +230,22 @@ llmops eval compare v1.json v2.json --max-drop 0.05              # exit code 1 i
 Models are called through the gateway config, so evals get the same retries and fallbacks as live traffic. One suite works for every version of a prompt: a variable that only some versions use (like `article`) is left out for the others, while a misspelled variable still fails.
 
 **In CI**, `.github/workflows/evals.yml` runs on pull requests that touch `prompts/` or `evals/`. It runs the suites against the base branch's prompts and against the PR's, then compares them. The PR fails if a suite's score drops by more than 5 points, and the comparison table goes into the job summary. It needs an `OPENAI_API_KEY` repository secret, with models listed in `evals/config/gateway.ci.yaml`. Without the secret (pull requests from forks never get one), it still validates the files and skips the model calls with a notice. Model answers vary a little from run to run, which is why there's an allowed drop rather than none.
+
+### Monitoring live answers
+
+Evals check a prompt change before it ships, but they can't notice a provider quietly changing the model behind the same name, or users asking things nobody wrote a test case for. For that, the gateway can keep a random sample of real answers (`monitoring.sample_rate`, off by default) and run monitors on them. A monitor uses the same checks as the eval suites and applies them to every sampled answer of one prompt or one model:
+
+```yaml
+monitoring:
+  sample_rate: 0.05          # keep 5% of answers
+  monitors:
+    - name: support-no-made-up-prices
+      prompt: support-reply
+      checks:
+        - {type: regex, pattern: '[$€£]\s?\d', must_match: false}
+```
+
+Results go to Prometheus right away as `llmops_monitor_checks_total{monitor, result}`, so a falling pass rate can alert. The samples are stored next to the usage records. Samples contain model output, so think about what your users send before you turn this on.
 
 ### Providers
 
